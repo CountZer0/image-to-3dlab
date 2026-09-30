@@ -41,7 +41,14 @@ from rig_api import (
     run_job as run_rig_job,
     status_payload as rig_status_payload,
 )
-from backend_catalog import _dir_state, catalog_status, readiness as catalog_readiness
+from backend_catalog import (
+    APPLE,
+    NVIDIA,
+    _dir_state,
+    catalog_status,
+    host_platform,
+    readiness as catalog_readiness,
+)
 from welcome_api import payload as welcome_payload
 from update_api import check as update_check
 from download_api import (
@@ -70,6 +77,12 @@ TRELLIS_VENDOR = REPO / "vendor" / "trellis-space-mac"
 # we know the vendored checkout can actually serve SPARSE_ATTN_BACKEND=mlx.
 MLX_DISPATCH_FILE = TRELLIS_VENDOR / "TRELLIS.2" / "trellis2" / "modules" / "sparse" / "attention" / "full_attn.py"
 MLX_DISPATCH_MARKER = "config.ATTN == 'mlx'"
+# TRELLIS.2 on Linux + NVIDIA: Microsoft's own checkout, built by
+# scripts/bootstrap_trellis_cuda.py. The Mac constants above are untouched.
+TRELLIS_CUDA_VENDOR = REPO / "vendor" / "trellis-cuda"
+TRELLIS_CUDA_WRAPPER = REPO / "scripts" / "trellis_cuda_generate.py"
+TRELLIS_CUDA_PYTHON = TRELLIS_CUDA_VENDOR / ".venv" / "bin" / "python"
+TRELLIS_CUDA_MARKER = TRELLIS_CUDA_VENDOR / ".i2l-build-complete"
 OUTPUT_ROOT = REPO / "output"
 BASELINE_PATH = REPO / "viewer" / "generate_baseline.json"
 TINYCLIP_ADVISOR = REPO / "scripts" / "classify_trellis_input.py"
@@ -290,15 +303,54 @@ def setup_status() -> dict[str, Any]:
     }
 
 
+def trellis_cuda_bria_patched(checkout: Path | None = None) -> bool:
+    """Whether the CUDA checkout has the BRIA guardrail. Stdlib only, like this module."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import patch_trellis_cuda_no_bria
+
+    return patch_trellis_cuda_no_bria.is_patched(checkout or TRELLIS_CUDA_VENDOR / "TRELLIS.2")
+
+
+def cuda_setup_status() -> dict[str, Any]:
+    """Readiness of the NVIDIA TRELLIS.2 route, for the Generate tab's readiness strip.
+
+    Not ready without the BRIA patch, even when everything else is built: the generator
+    would refuse anyway, and the button should not promise a run that cannot start.
+    """
+    built = (TRELLIS_CUDA_MARKER.is_file() and TRELLIS_CUDA_PYTHON.is_file()
+             and TRELLIS_CUDA_WRAPPER.is_file())
+    patched = trellis_cuda_bria_patched() if built else False
+    weights = weights_on_disk()
+    missing = [w["label"] for w in weights.values() if not w["present"]]
+    hint = None
+    if not built:
+        hint = ("TRELLIS.2 for NVIDIA is not installed. Set it up from Setup & Status, or run "
+                "python scripts/bootstrap_trellis_cuda.py (Linux only, ~15 GB of weights).")
+    elif not patched:
+        hint = ("The TRELLIS.2 checkout still loads BRIA RMBG-2.0. Run "
+                "python scripts/patch_trellis_cuda_no_bria.py first.")
+    return {
+        "schema_version": 1,
+        "build": {"present": built and patched, "interpreter": str(TRELLIS_CUDA_PYTHON),
+                  "wrapper": str(TRELLIS_CUDA_WRAPPER), "hint": hint},
+        "weights": weights,
+        "missing_weights": missing,
+        "bria_patched": patched,
+        "ready": built and patched,
+        "warning": "first use will download missing weights" if missing else None,
+    }
+
+
 def run_trellis_input_advisor(image_path: Path) -> dict[str, Any]:
     """Run TinyCLIP out-of-process so the lightweight viewer never imports torch."""
-    if not PYTHON.is_file():
+    python = trellis_spec().interpreter
+    if not python.is_file():
         raise RuntimeError("TRELLIS environment is not installed")
     if not TINYCLIP_ADVISOR.is_file():
         raise RuntimeError(f"TinyCLIP advisor is missing: {TINYCLIP_ADVISOR}")
     try:
         result = subprocess.run(
-            [str(PYTHON), str(TINYCLIP_ADVISOR), str(image_path)],
+            [str(python), str(TINYCLIP_ADVISOR), str(image_path)],
             cwd=REPO,
             env=_job_env(),
             check=True,
@@ -347,8 +399,15 @@ class SetupRun:
             self.condition.notify_all()
 
 
-def setup_available() -> tuple[bool, str | None]:
-    """Whether the setup runner can start: uv on PATH and the bootstrap script present."""
+def setup_available(host: str | None = None) -> tuple[bool, str | None]:
+    """Whether the setup runner can start: uv on PATH and the bootstrap script present.
+
+    This older runner only knows the Mac bootstrap; anywhere else, Setup & Status runs the
+    right installer for the machine.
+    """
+    if (host or host_platform()) != APPLE:
+        return False, ("this setup runs the Mac port; on this machine use Setup & Status "
+                       "> TRELLIS.2 > Set up")
     if shutil.which("uv") is None:
         return False, "uv is not installed — install it first (https://docs.astral.sh/uv/)"
     bootstrap = REPO / "scripts" / "bootstrap_trellis_space_macos.py"
@@ -860,8 +919,10 @@ def _cleanup_debug_files(job: Job) -> None:
     """Debug mode off (the default): keep only the primary .glb. Deletes the manifest,
     textures, intermediate meshes, resume caches, and run.log -- everything a run writes
     that exists purely to diagnose a run, not to use the asset."""
+    # The licence record travels with the file (AGENTS.md), so it is never "debug".
+    keep = {job.output_path, job.output_path.with_suffix(".provenance.json")}
     for path in job.directory.iterdir():
-        if path == job.output_path:
+        if path in keep:
             continue
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -986,7 +1047,7 @@ def _run_job(job: Job) -> None:
     spec = BACKENDS[job.backend_id]
     args = [str(spec.interpreter), str(spec.wrapper), *spec.build_args(job)]
     env = _job_env()
-    if job.backend_id == "trellis":
+    if job.backend_id == "trellis" and spec.wrapper == WRAPPER:
         env.update(attention_backend_spec(job.settings["sparse_attn_backend"])[1])
     try:
         job.status = "running"
@@ -1067,6 +1128,21 @@ def _trellis_build_args(job: Job) -> list[str]:
     if not job.debug:
         # Skip the multi-hundred-MB resume caches entirely rather than write-then-delete.
         args += ["--no-save-latents", "--no-save-decode"]
+    return args
+
+
+def _trellis_cuda_build_args(job: Job) -> list[str]:
+    """The CUDA generator takes the same settings, minus the Mac-only ones: attention is
+    flash-attn, and the cut-out is always our own remover, never BRIA."""
+    args = [
+        str(job.image_path), str(job.output_path),
+        "--resolution", job.settings["resolution"],
+        "--seed", str(job.settings["seed"]),
+        "--decimation-target", str(job.settings["decimation_target"]),
+        "--texture-size", str(job.settings["texture_size"]),
+    ]
+    if not job.debug:
+        args.append("--no-save-latents")
     return args
 
 
@@ -1572,8 +1648,23 @@ def _pixal3d_readiness() -> dict[str, Any]:
     }
 
 
-BACKENDS.update({
-    "trellis": BackendSpec(
+def trellis_spec(host: str | None = None) -> BackendSpec:
+    """TRELLIS.2 for this machine: the Metal port on a Mac, Microsoft's code on NVIDIA.
+
+    One id, two installs. The NVIDIA spec mattes images itself with our remover, so it
+    does not demand a transparent upload the way the Mac port does.
+    """
+    if (host or host_platform()) == NVIDIA:
+        return BackendSpec(
+            id="trellis", label="TRELLIS.2 (NVIDIA)",
+            interpreter=TRELLIS_CUDA_PYTHON, wrapper=TRELLIS_CUDA_WRAPPER,
+            default_settings=DEFAULT_SETTINGS, stages=STAGES, stage_labels=PHASE_LABELS,
+            requires_alpha=False,
+            validate_settings=validate_settings, build_args=_trellis_cuda_build_args,
+            parse_line=_trellis_parse_line, readiness=cuda_setup_status,
+            baseline_path=BASELINE_PATH,
+        )
+    return BackendSpec(
         id="trellis", label="TRELLIS.2 (clean port)",
         interpreter=PYTHON, wrapper=WRAPPER,
         default_settings=DEFAULT_SETTINGS, stages=STAGES, stage_labels=PHASE_LABELS,
@@ -1581,7 +1672,11 @@ BACKENDS.update({
         validate_settings=validate_settings, build_args=_trellis_build_args,
         parse_line=_trellis_parse_line, readiness=setup_status,
         baseline_path=BASELINE_PATH,
-    ),
+    )
+
+
+BACKENDS.update({
+    "trellis": trellis_spec(),
     "sf3d": BackendSpec(
         id="sf3d", label="Stable Fast 3D",
         interpreter=Path(sys.executable), wrapper=REPO / "pipeline.py",

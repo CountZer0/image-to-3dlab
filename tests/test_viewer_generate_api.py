@@ -1075,3 +1075,92 @@ def test_reconcile_notes_a_finish_run_in_its_steps_log(tmp_path, monkeypatch):
 
     api._reconcile_orphaned_jobs(tmp_path)
     assert "died mid-run" in (job_dir / "steps" / "run.log").read_text()
+
+
+# --- TRELLIS.2 on NVIDIA: same id, Microsoft's own code, the Mac path unchanged ---
+def test_trellis_on_a_mac_keeps_the_metal_port():
+    spec = api.trellis_spec(api.APPLE)
+    assert spec.wrapper == api.WRAPPER and spec.interpreter == api.PYTHON
+    assert spec.requires_alpha is True
+    assert spec.readiness is api.setup_status
+
+
+def test_trellis_on_nvidia_runs_the_cuda_generator():
+    spec = api.trellis_spec(api.NVIDIA)
+    assert spec.id == "trellis"
+    assert spec.wrapper == api.TRELLIS_CUDA_WRAPPER and spec.wrapper.is_file()
+    assert spec.interpreter == api.TRELLIS_CUDA_PYTHON
+    # It mattes with our own remover, so an opaque upload is fine.
+    assert spec.requires_alpha is False
+    assert spec.readiness is api.cuda_setup_status
+
+
+def test_cuda_args_drop_the_mac_only_flags(tmp_path):
+    settings = api.validate_settings({"allow_rembg": True, "sparse_attn_backend": "mlx"})
+    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb",
+                  settings, "trellis")
+    args = api._trellis_cuda_build_args(job)
+    assert args[:2] == [str(tmp_path / "in.png"), str(tmp_path / "out.glb")]
+    assert "--allow-rembg" not in args and "--sparse-attn-backend" not in args
+    assert "--no-save-latents" in args
+    job.debug = True
+    assert "--no-save-latents" not in api._trellis_cuda_build_args(job)
+
+
+def test_cuda_args_are_ones_the_generator_accepts(tmp_path):
+    import trellis_cuda_generate
+
+    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb",
+                  api.validate_settings({}), "trellis")
+    parsed = trellis_cuda_generate.parse_args(api._trellis_cuda_build_args(job))
+    assert parsed.resolution == "1024" and parsed.save_latents is False
+
+
+def _cuda_install(tmp_path, monkeypatch, *, built=True, patched=True):
+    vendor = tmp_path / "trellis-cuda"
+    python = vendor / ".venv" / "bin" / "python"
+    marker = vendor / ".i2l-build-complete"
+    if built:
+        python.parent.mkdir(parents=True)
+        python.write_text("")
+        marker.write_text("{}")
+    monkeypatch.setattr(api, "TRELLIS_CUDA_PYTHON", python)
+    monkeypatch.setattr(api, "TRELLIS_CUDA_MARKER", marker)
+    monkeypatch.setattr(api, "weights_on_disk", lambda *a, **k: {})
+    monkeypatch.setattr(api, "trellis_cuda_bria_patched", lambda *a: patched)
+
+
+def test_cuda_route_is_ready_when_built_and_patched(tmp_path, monkeypatch):
+    _cuda_install(tmp_path, monkeypatch)
+    assert api.cuda_setup_status()["ready"] is True
+
+
+def test_cuda_route_is_not_ready_without_the_bria_patch(tmp_path, monkeypatch):
+    _cuda_install(tmp_path, monkeypatch, patched=False)
+    status = api.cuda_setup_status()
+    assert status["ready"] is False and status["bria_patched"] is False
+    assert "patch_trellis_cuda_no_bria.py" in status["build"]["hint"]
+
+
+def test_cuda_route_not_built_points_at_its_bootstrap(tmp_path, monkeypatch):
+    _cuda_install(tmp_path, monkeypatch, built=False)
+    status = api.cuda_setup_status()
+    assert status["ready"] is False
+    assert "bootstrap_trellis_cuda.py" in status["build"]["hint"]
+
+
+def test_bria_patch_probe_reads_the_real_checkout_rule(tmp_path):
+    assert api.trellis_cuda_bria_patched(tmp_path / "missing") is False
+
+
+def test_the_old_mac_setup_runner_refuses_other_machines():
+    ok, reason = api.setup_available(api.NVIDIA)
+    assert ok is False and "Setup & Status" in reason
+
+
+def test_cleanup_keeps_the_provenance_sidecar(tmp_path):
+    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb", {}, "trellis")
+    for name in ("out.glb", "out.provenance.json", "out.json", "out_latents.pt"):
+        (tmp_path / name).write_text("x")
+    api._cleanup_debug_files(job)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.glb", "out.provenance.json"]
