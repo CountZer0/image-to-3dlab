@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CUDA toolkit and a one-off compile. Not tested on real hardware yet. Windows is not
   supported for TRELLIS.2 yet. Also available as `scripts/bootstrap_trellis_cuda.py` and
   `scripts/trellis_cuda_generate.py`.
+- **Hunyuan3D-2.1 on Linux with an NVIDIA card.** A new route, **Hunyuan3D-2.1 (NVIDIA)**,
+  runs Tencent's own code: shape, then PBR paint, in one run. Setup says what it will
+  fetch (~19.5 GB, including the DINOv2 encoder upstream downloads unannounced) and asks
+  first; it compiles the paint rasterizer for your card, so it needs the CUDA 12 toolkit
+  and a 24 GB card. Pictures are cut out by our own remover first. Not tested on real
+  hardware yet, and not licensed in the EU, the UK or South Korea. Also available as
+  `scripts/bootstrap_hunyuan_cuda.py` and `scripts/hunyuan_cuda_generate.py`.
 
 ### Security
 - **BRIA RMBG-2.0 stays out of the NVIDIA TRELLIS.2 route too.** Upstream loads it by
