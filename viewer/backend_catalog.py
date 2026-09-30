@@ -156,6 +156,9 @@ class Backend:
     # Operating systems a listed machine type still cannot use, as (host, os family):
     # TRELLIS.2 runs on NVIDIA under Linux, but its CUDA build is not set up for Windows.
     excludes: tuple[tuple[str, str], ...] = ()
+    # A separate route in this catalogue that does the same job on NVIDIA (the MLX Hunyuan
+    # ports -> Tencent's own Hunyuan3D-2.1). Named in the note an NVIDIA machine sees.
+    nvidia_route: str | None = None
 
     @property
     def bytes_expected(self) -> int:
@@ -191,6 +194,11 @@ class Backend:
                     f"On an NVIDIA card it runs under Linux.")
         # The "use the official version" advice is only true while this lab cannot run it
         # on NVIDIA itself; once a route lists NVIDIA, the plain note is the honest one.
+        twin = BY_ID.get(self.nvidia_route) if self.nvidia_route else None
+        if twin is not None and (host or host_platform()) == NVIDIA:
+            return (f"This lab runs the Apple Silicon port here. On an NVIDIA machine, use "
+                    f"{twin.label} instead: {self.upstream[0] if self.upstream else 'it'} "
+                    f"with the vendor's own code, set up from this page.")
         if self.upstream and NVIDIA not in self.runs_on:
             return (f"This lab runs the Apple Silicon port. {self.upstream[0]} itself is "
                     f"built for NVIDIA: on an NVIDIA machine, use the official version "
@@ -284,6 +292,7 @@ CATALOG: tuple[Backend, ...] = (
         license_url="https://huggingface.co/tencent/Hunyuan3D-2.1",
         install="uv sync + hunyuan_mlx/download_weights.py",
         upstream=("Hunyuan3D-2.1", "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1"),
+        nvidia_route="hunyuan-cuda",
         setup_minutes=25,
         build_probes=(venv_python(REPO / "hunyuan_mlx" / "shape"),
                       venv_python(REPO / "hunyuan_mlx" / "paint")),
@@ -300,6 +309,42 @@ CATALOG: tuple[Backend, ...] = (
         ),
     ),
     Backend(
+        id="hunyuan-cuda",
+        label="Hunyuan3D-2.1 (NVIDIA)",
+        rank=2,
+        best_for="Hunyuan on an NVIDIA card: Tencent's own shape and PBR paint, one run.",
+        tradeoff=(
+            "Linux only, and paint needs about 21 GB of GPU memory: a 24 GB card or bigger. "
+            "Compiles its paint rasterizer for your card on setup."
+        ),
+        license_name="Tencent Hunyuan Community License (code + weights)",
+        license_url="https://huggingface.co/tencent/Hunyuan3D-2.1",
+        install="scripts/bootstrap_hunyuan_cuda.py",
+        runs_on=(NVIDIA,),
+        excludes=((NVIDIA, "windows"),),
+        setup_minutes=30,
+        build_probes=(REPO / "vendor" / "hunyuan-cuda" / ".i2l-build-complete",),
+        caveat=(
+            "The Hunyuan weights are not licensed for use in the EU, the UK or South Korea. "
+            "Check the licence before downloading."
+        ),
+        weights=(
+            WeightSet("Hunyuan3D-2.1 shape + VAE", "tencent/Hunyuan3D-2.1", int(8.03 * GB),
+                      REPO / "vendor" / "hunyuan-cuda" / "models" / "tencent" / "Hunyuan3D-2.1"),
+            WeightSet("Hunyuan3D-2.1 PBR paint", "tencent/Hunyuan3D-2.1", int(6.89 * GB),
+                      HF_HUB_DIR / "models--tencent--Hunyuan3D-2.1"),
+            WeightSet("DINOv2-giant image encoder", "facebook/dinov2-giant", int(4.55 * GB),
+                      HF_HUB_DIR / "models--facebook--dinov2-giant",
+                      note="The paint model reads the picture with it. Upstream fetches it "
+                           "unannounced on the first run; here it is fetched at setup."),
+            WeightSet("RealESRGAN x4plus upscaler",
+                      "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/"
+                      "RealESRGAN_x4plus.pth",
+                      int(0.067 * GB),
+                      REPO / "vendor" / "hunyuan-cuda" / "ckpt" / "RealESRGAN_x4plus.pth"),
+        ),
+    ),
+    Backend(
         id="hunyuan-mlx",
         label="Hunyuan3D-MLX (dgrauet shape + Xiong paint)",
         rank=4,
@@ -312,6 +357,7 @@ CATALOG: tuple[Backend, ...] = (
         license_url="https://huggingface.co/tencent/Hunyuan3D-2.1",
         install="Manual: clone dgrauet's port into vendor/hunyuan-mlx, then uv sync",
         upstream=("Hunyuan3D-2.1", "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1"),
+        nvidia_route="hunyuan-cuda",
         automated_setup=False,
         setup_minutes=40,
         build_probes=(REPO / "vendor" / "hunyuan-mlx" / ".venv" / "bin" / "python",

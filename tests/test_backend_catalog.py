@@ -133,12 +133,13 @@ def test_onboarding_is_needed_only_when_nothing_is_ready(monkeypatch, tmp_path):
     empty = bc.catalog_status(host=bc.APPLE)
     assert empty["needs_onboarding"] is True
     assert empty["ready_count"] == 0
-    assert all(b["state"] == "missing" for b in empty["backends"])
+    # NVIDIA-only routes (Hunyuan3D-2.1) are "unsupported" on a Mac, not "missing".
+    here = [b for b in empty["backends"] if b["supported_here"]]
+    assert here and all(b["state"] == "missing" for b in here)
     # "build" where the viewer can do it, "manual" where it cannot. Both mean "not yet";
     # neither means "nothing to offer", which is what an unsupported machine gets.
-    assert all(b["action"] in {"build", "manual"} for b in empty["backends"])
-    assert all(b["action"] == ("build" if b["automated_setup"] else "manual")
-               for b in empty["backends"])
+    assert all(b["action"] in {"build", "manual"} for b in here)
+    assert all(b["action"] == ("build" if b["automated_setup"] else "manual") for b in here)
 
 
 def test_backends_are_listed_best_first():
@@ -356,17 +357,27 @@ def test_there_is_only_ever_one_catalogue_module():
     assert sys.modules["backend_catalog"] is bc
 
 
-def test_a_mac_port_points_other_machines_at_the_official_nvidia_version():
-    """TRELLIS.2 and Hunyuan3D are NVIDIA-first upstream; only our ports are Mac-only.
+def test_a_mac_hunyuan_port_points_nvidia_at_the_nvidia_route():
+    """The MLX Hunyuan ports are Mac-only; on NVIDIA the lab has Tencent's own code.
 
-    A Linux or Windows user must not read "needs Apple Silicon" as the whole truth.
+    A Linux user must not read "needs Apple Silicon" as the whole truth, nor be sent off
+    to another repo for something this lab now runs.
     """
+    twin = bc.BY_ID["hunyuan-cuda"]
     for backend_id in ("hunyuan_xiong", "hunyuan-mlx"):
         entry = bc.BY_ID[backend_id].describe(bc.NVIDIA)
         assert entry["supported_here"] is False
         assert entry["upstream"]["url"].startswith("https://github.com/"), backend_id
-        assert "port" in entry["platform_note"] and "NVIDIA" in entry["platform_note"]
-        assert entry["upstream"]["label"] in entry["platform_note"], backend_id
+        assert twin.label in entry["platform_note"], backend_id
+        assert "later" not in entry["platform_note"], backend_id
+
+
+def test_hunyuan_cuda_is_nvidia_linux_only():
+    entry = bc.BY_ID["hunyuan-cuda"]
+    assert entry.runs_here(bc.NVIDIA, "linux")
+    assert not entry.runs_here(bc.NVIDIA, "windows")
+    assert not entry.runs_here(bc.APPLE, "darwin")
+    assert "EU" in entry.caveat
 
 
 def test_trellis_is_supported_on_nvidia_now_not_pointed_elsewhere():

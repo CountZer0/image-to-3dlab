@@ -363,3 +363,9 @@ def test_the_catalog_carries_a_rebuild_reason_only_where_the_backend_runs():
     out = generate_api.with_rebuild_reasons(catalog, reason=lambda backend_id: "stale")
     assert out["backends"][0]["rebuild_reason"] == "stale"
     assert out["backends"][1]["rebuild_reason"] is None
+
+
+def test_hunyuan_cuda_sets_up_with_its_own_bootstrap_and_says_cuda():
+    command = dl.command_for("hunyuan-cuda", host=dl.NVIDIA)
+    assert command[1].endswith("bootstrap_hunyuan_cuda.py") and command[-1] == "--yes"
+    assert dl.building_label("hunyuan-cuda", host=dl.NVIDIA) == "building the CUDA version"

@@ -68,6 +68,10 @@ COMMANDS: dict[str, list[str]] = {
     "qwen-image": [sys.executable, str(REPO / "scripts" / "bootstrap_qwen_image.py"),
                    "--yes"],
     "matte": [sys.executable, str(REPO / "scripts" / "bootstrap_matte.py"), "--yes"],
+    # NVIDIA-only: Tencent's own Hunyuan3D-2.1, built for CUDA. The catalogue marks it
+    # unsupported everywhere else, so start() refuses before this runs on a Mac.
+    "hunyuan-cuda": [sys.executable, str(REPO / "scripts" / "bootstrap_hunyuan_cuda.py"),
+                     "--yes"],
 }
 
 # Where a route installs differently per machine, the machine's own command wins. TRELLIS.2
@@ -96,7 +100,7 @@ def command_for(backend_id: str, host: str | None = None,
 
 def building_label(backend_id: str, host: str | None = None) -> str:
     """What a setup with no bytes to measure is doing, for the progress line."""
-    if (backend_id, host or _this_host()) in HOST_COMMANDS:
+    if (backend_id, host or _this_host()) in HOST_COMMANDS or backend_id == "hunyuan-cuda":
         return "building the CUDA version"
     return "building the Metal port"
 
