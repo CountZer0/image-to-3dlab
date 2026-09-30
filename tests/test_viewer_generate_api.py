@@ -1164,3 +1164,14 @@ def test_cleanup_keeps_the_provenance_sidecar(tmp_path):
         (tmp_path / name).write_text("x")
     api._cleanup_debug_files(job)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out.glb", "out.provenance.json"]
+
+
+def test_nvidia_trellis_hides_the_mac_only_controls():
+    assert set(api.trellis_spec(api.NVIDIA).hidden_fields) == {"generate-attention", "generate-rembg"}
+    assert api.trellis_spec(api.APPLE).hidden_fields == ()
+
+
+def test_hidden_fields_name_real_generate_controls():
+    html = (Path(api.__file__).parent / "index.html").read_text()
+    for field in api.trellis_spec(api.NVIDIA).hidden_fields:
+        assert f'id="{field}"' in html

@@ -224,6 +224,9 @@ class BackendSpec:
     """Runs after the subprocess exits 0, before the output-file existence check — for
     backends whose wrapper doesn't write directly to job.output_path (SF3D writes
     ``<stem>_sf3d.glb`` instead)."""
+    hidden_fields: tuple[str, ...] = ()
+    """Element ids of Generate-tab controls this spec ignores, so the page hides them
+    (the Mac-only attention and rembg options mean nothing on the NVIDIA route)."""
 
 
 BACKENDS: dict[str, BackendSpec] = {}
@@ -1663,6 +1666,7 @@ def trellis_spec(host: str | None = None) -> BackendSpec:
             validate_settings=validate_settings, build_args=_trellis_cuda_build_args,
             parse_line=_trellis_parse_line, readiness=cuda_setup_status,
             baseline_path=BASELINE_PATH,
+            hidden_fields=("generate-attention", "generate-rembg"),
         )
     return BackendSpec(
         id="trellis", label="TRELLIS.2 (clean port)",
@@ -1984,7 +1988,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "backends": [
                     {"id": spec.id, "label": spec.label, "requires_alpha": spec.requires_alpha,
                      "default_settings": spec.default_settings, "stages": spec.stages,
-                     "stage_labels": spec.stage_labels}
+                     "stage_labels": spec.stage_labels,
+                     "hidden_fields": list(spec.hidden_fields)}
                     for spec in BACKENDS.values()
                 ]
             })

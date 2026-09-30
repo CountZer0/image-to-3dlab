@@ -30,6 +30,15 @@ const gen = {
 };
 const setupState = { ready: false };
 function currentBackend() { return g('generate-backend').value; }
+// Hide the controls the server says this machine's route ignores (e.g. the Mac-only
+// attention and rembg options on NVIDIA). A control is hidden with its wrapping row.
+function applyHiddenFields() {
+  const hidden = new Set(backendMeta[currentBackend()]?.hidden_fields || []);
+  for (const el of document.querySelectorAll('.backend-fields [id]')) {
+    const row = el.closest('.field, label.check');
+    if (row && (el.tagName === 'SELECT' || el.tagName === 'INPUT')) row.hidden = hidden.has(el.id);
+  }
+}
 function backendRequiresAlpha() {
   const meta = backendMeta[currentBackend()];
   return meta ? meta.requires_alpha : true; // fail conservative if metadata hasn't loaded yet
@@ -332,8 +341,8 @@ async function refreshSetup() {
         }
       }
     }
-    if (backendId === 'trellis') {
-      const mlx = s.mlx_attention || {};
+    if (backendId === 'trellis' && s.mlx_attention) { // Mac only; NVIDIA reports none
+      const mlx = s.mlx_attention;
       const sel = g('generate-attention');
       if (sel) {
         for (const opt of sel.querySelectorAll('option')) {
@@ -386,6 +395,7 @@ async function loadBackendMeta() {
     backendMeta = merged;
   } catch (e) { /* keep the trellis-only placeholder; page stays usable */ }
   buildStageRows(currentBackend());
+  applyHiddenFields();
   refreshSetup();
 }
 g('generate-backend').onchange = () => {
@@ -394,6 +404,7 @@ g('generate-backend').onchange = () => {
     block.hidden = block.dataset.backend !== backendId;
   }
   buildStageRows(backendId);
+  applyHiddenFields();
   jobProgress.reset();
   if (gen.file) renderAlphaBadge(); // the image is unchanged; only the wording depends on the backend
   updateGenerateButton();
