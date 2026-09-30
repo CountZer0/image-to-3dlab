@@ -148,21 +148,50 @@ class Backend:
     # NVIDIA-first upstream; only our wrappers are Apple-only. Without this, a Linux user
     # read "needs Apple Silicon" as if the model itself could not run on their card.
     upstream: tuple[str, str] | None = None
+    # A route that installs differently per machine (TRELLIS.2: the Metal port on a Mac,
+    # Microsoft's own code on NVIDIA) overrides `install` and `build_probes` per host here.
+    # Hosts not listed use the plain fields.
+    install_by_host: dict[str, str] = field(default_factory=dict)
+    build_probes_by_host: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+    # Operating systems a listed machine type still cannot use, as (host, os family):
+    # TRELLIS.2 runs on NVIDIA under Linux, but its CUDA build is not set up for Windows.
+    excludes: tuple[tuple[str, str], ...] = ()
 
     @property
     def bytes_expected(self) -> int:
         return sum(w.bytes_expected for w in self.weights)
 
+    def install_for(self, host: str | None = None) -> str:
+        return self.install_by_host.get(host or host_platform(), self.install)
+
+    def probes_for(self, host: str | None = None) -> tuple[Path, ...]:
+        return self.build_probes_by_host.get(host or host_platform(), self.build_probes)
+
+    def built_on(self, host: str | None = None) -> bool:
+        """True when nothing is declared, so a weights-only backend is never 'unbuilt'."""
+        return all(p.exists() for p in self.probes_for(host))
+
     @property
     def build_present(self) -> bool:
-        """True when nothing is declared, so a weights-only backend is never 'unbuilt'."""
-        return all(p.exists() for p in self.build_probes)
+        return self.built_on()
 
-    def runs_here(self, host: str | None = None) -> bool:
-        return (host or host_platform()) in self.runs_on
+    def excluded_os(self, host: str | None = None, family: str | None = None) -> str | None:
+        """The OS family that rules this machine out, or None."""
+        family = family or _host.os_family()
+        return family if ((host or host_platform()), family) in self.excludes else None
 
-    def _platform_note(self) -> str:
-        if self.upstream:
+    def runs_here(self, host: str | None = None, family: str | None = None) -> bool:
+        host = host or host_platform()
+        return host in self.runs_on and self.excluded_os(host, family) is None
+
+    def _platform_note(self, host: str | None = None, family: str | None = None) -> str:
+        excluded = self.excluded_os(host, family)
+        if excluded:
+            return (f"{self.label} is not supported on {excluded.capitalize()} yet. "
+                    f"On an NVIDIA card it runs under Linux.")
+        # The "use the official version" advice is only true while this lab cannot run it
+        # on NVIDIA itself; once a route lists NVIDIA, the plain note is the honest one.
+        if self.upstream and NVIDIA not in self.runs_on:
             return (f"This lab runs the Apple Silicon port. {self.upstream[0]} itself is "
                     f"built for NVIDIA: on an NVIDIA machine, use the official version "
                     f"for now. Built into this lab later.")
@@ -172,14 +201,14 @@ class Backend:
     def describe(self, host: str | None = None) -> dict[str, Any]:
         weights = [w.describe() for w in self.weights]
         present = sum(w["bytes_present"] for w in weights)
-        built = self.build_present
+        built = self.built_on(host)
         supported = self.runs_here(host)
         return {
             "build_present": built,
             "supported_here": supported,
             "requires": runs_on_phrase(self),
             # Said once, in words, so the screen can explain instead of a button failing.
-            "platform_note": None if supported else self._platform_note(),
+            "platform_note": None if supported else self._platform_note(host),
             "upstream": ({"label": self.upstream[0], "url": self.upstream[1]}
                          if self.upstream else None),
             "id": self.id,
@@ -191,7 +220,7 @@ class Backend:
             "tradeoff": self.tradeoff,
             "license": {"name": self.license_name, "url": self.license_url},
             "caveat": self.caveat,
-            "install": self.install,
+            "install": self.install_for(host),
             "setup_minutes": self.setup_minutes,
             "setup_fetches_weights": self.setup_fetches_weights,
             "extra_steps": list(self.extra_steps),
@@ -344,6 +373,14 @@ CATALOG: tuple[Backend, ...] = (
         license_url="https://huggingface.co/microsoft/TRELLIS.2-4B",
         install="viewer",
         upstream=("TRELLIS.2", "https://github.com/microsoft/TRELLIS.2"),
+        # Mac: the Metal port. Linux + NVIDIA: Microsoft's own code, built for CUDA.
+        # Windows is not supported for TRELLIS.2 yet (the bootstrap refuses it).
+        runs_on=(APPLE, NVIDIA),
+        excludes=((NVIDIA, "windows"),),
+        install_by_host={NVIDIA: "scripts/bootstrap_trellis_cuda.py"},
+        build_probes_by_host={
+            NVIDIA: (REPO / "vendor" / "trellis-cuda" / ".i2l-build-complete",),
+        },
         caveat=(
             "Its DINOv3 image encoder is gated: request access to "
             "facebook/dinov3-vitl16-pretrain-lvd1689m on Hugging Face (Meta approves by "
@@ -463,7 +500,7 @@ def readiness(backend_id: str, host: str | None = None) -> dict[str, Any] | None
     if not supported:
         hint = described["platform_note"]
     elif not built:
-        hint = f"{backend.label} is not installed — run: {backend.install}"
+        hint = f"{backend.label} is not installed — run: {backend.install_for(host)}"
     return {
         "schema_version": 1,
         "backend": backend.id,

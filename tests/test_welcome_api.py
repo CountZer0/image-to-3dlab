@@ -94,7 +94,10 @@ def test_payload_names_this_machine_and_its_routes(monkeypatch):
     assert data["host"]["id"] == "nvidia"
     runs_here = {r["id"] for r in data["routes"]}
     assert {"pixal3d", "sf3d", "qwen-image"} <= runs_here
-    assert "trellis" not in runs_here  # Mac-only for now
+    assert "hunyuan_xiong" not in runs_here  # Mac-only for now
+    # TRELLIS.2 runs on NVIDIA under Linux, not yet under Windows.
+    linux_ok = backend_catalog.BY_ID["trellis"].excluded_os(backend_catalog.NVIDIA) is None
+    assert ("trellis" in runs_here) is linux_ok
     assert [r["version"] for r in data["news"]] == ["0.3.0"]
 
 

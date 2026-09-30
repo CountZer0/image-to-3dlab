@@ -16,6 +16,7 @@ from pathlib import Path
 # `audit_model_weights` all import this module normally, and a second copy under the same
 # name is how a monkeypatch here stops reaching the code under test.
 import backend_catalog as bc
+import pytest
 
 
 def test_every_backend_states_a_licence_and_links_to_it():
@@ -360,12 +361,70 @@ def test_a_mac_port_points_other_machines_at_the_official_nvidia_version():
 
     A Linux or Windows user must not read "needs Apple Silicon" as the whole truth.
     """
-    for backend_id in ("trellis", "hunyuan_xiong", "hunyuan-mlx"):
+    for backend_id in ("hunyuan_xiong", "hunyuan-mlx"):
         entry = bc.BY_ID[backend_id].describe(bc.NVIDIA)
         assert entry["supported_here"] is False
         assert entry["upstream"]["url"].startswith("https://github.com/"), backend_id
         assert "port" in entry["platform_note"] and "NVIDIA" in entry["platform_note"]
         assert entry["upstream"]["label"] in entry["platform_note"], backend_id
+
+
+def test_trellis_is_supported_on_nvidia_now_not_pointed_elsewhere():
+    """TRELLIS.2 has its own NVIDIA route (Microsoft's code, built for CUDA), so an NVIDIA
+    Linux machine gets a Set up button rather than a link to the official repo."""
+    trellis = bc.BY_ID["trellis"]
+    assert trellis.runs_on == (bc.APPLE, bc.NVIDIA)
+    entry = trellis.describe(bc.NVIDIA)
+    if trellis.excluded_os(bc.NVIDIA):  # this test machine is Windows
+        pytest.skip("TRELLIS.2 on NVIDIA is Linux only")
+    assert entry["supported_here"] is True
+    assert entry["platform_note"] is None
+    assert entry["install"] == "scripts/bootstrap_trellis_cuda.py"
+    assert entry["upstream"]["url"] == "https://github.com/microsoft/TRELLIS.2"
+
+
+def test_trellis_install_and_build_probe_differ_per_machine():
+    trellis = bc.BY_ID["trellis"]
+    assert trellis.install_for(bc.APPLE) == "viewer"
+    assert trellis.install_for(bc.NVIDIA) == "scripts/bootstrap_trellis_cuda.py"
+    mac = trellis.probes_for(bc.APPLE)
+    nvidia = trellis.probes_for(bc.NVIDIA)
+    assert mac == (bc.venv_python(bc.REPO / "vendor" / "trellis-space-mac"),)
+    assert all("trellis-cuda" in str(p) for p in nvidia) and nvidia
+
+
+def test_trellis_nvidia_build_is_judged_by_its_own_probe(monkeypatch, tmp_path):
+    import dataclasses
+
+    marker = tmp_path / ".i2l-build-complete"
+    trellis = dataclasses.replace(bc.BY_ID["trellis"],
+                                  build_probes_by_host={bc.NVIDIA: (marker,)})
+    assert trellis.built_on(bc.NVIDIA) is False
+    marker.write_text("{}")
+    assert trellis.built_on(bc.NVIDIA) is True
+
+
+def test_trellis_on_windows_nvidia_is_refused_with_a_reason():
+    trellis = bc.BY_ID["trellis"]
+    assert trellis.runs_here(bc.NVIDIA, "windows") is False
+    assert trellis.runs_here(bc.NVIDIA, "linux") is True
+    note = trellis._platform_note(bc.NVIDIA, "windows")
+    assert "Windows" in note and "Linux" in note
+
+
+def test_the_mac_trellis_route_is_unchanged():
+    entry = bc.BY_ID["trellis"].describe(bc.APPLE)
+    assert entry["supported_here"] is True
+    assert entry["install"] == "viewer"
+    assert entry["setup_fetches_weights"] is False
+
+
+def test_readiness_hint_names_the_nvidia_installer(monkeypatch):
+    if bc.BY_ID["trellis"].excluded_os(bc.NVIDIA):
+        pytest.skip("TRELLIS.2 on NVIDIA is Linux only")
+    monkeypatch.setattr(bc.Backend, "built_on", lambda self, host=None: False)
+    payload = bc.readiness("trellis", host=bc.NVIDIA)
+    assert "bootstrap_trellis_cuda.py" in payload["build"]["hint"]
 
 
 def test_a_route_with_no_official_elsewhere_keeps_the_plain_note():
