@@ -37,6 +37,7 @@ from image_to_3dlab import processes  # noqa: E402
 from backend_catalog import (  # noqa: E402
     BY_ID,
     HF_HUB_DIR,
+    NVIDIA,
     Backend,
     human_bytes,
     runs_on_phrase,
@@ -68,6 +69,37 @@ COMMANDS: dict[str, list[str]] = {
                    "--yes"],
     "matte": [sys.executable, str(REPO / "scripts" / "bootstrap_matte.py"), "--yes"],
 }
+
+# Where a route installs differently per machine, the machine's own command wins. TRELLIS.2
+# on NVIDIA is Microsoft's code built for CUDA, not the Metal port; --yes because the
+# Setup & Status dialog has already named the route and its ~15 GB.
+HOST_COMMANDS: dict[tuple[str, str], list[str]] = {
+    ("trellis", NVIDIA): [sys.executable, str(REPO / "scripts" / "bootstrap_trellis_cuda.py"),
+                          "--yes"],
+}
+
+
+def _this_host() -> str:
+    # Through the module, so a test that pretends to be another machine reaches this too.
+    import backend_catalog
+
+    return backend_catalog.host_platform()
+
+
+def command_for(backend_id: str, host: str | None = None,
+                rebuild: bool = False) -> list[str] | None:
+    """The command that sets this backend up (or rebuilds it) on this machine, or None."""
+    if rebuild:
+        return REBUILDS.get(backend_id)
+    return HOST_COMMANDS.get((backend_id, host or _this_host()), COMMANDS.get(backend_id))
+
+
+def building_label(backend_id: str, host: str | None = None) -> str:
+    """What a setup with no bytes to measure is doing, for the progress line."""
+    if (backend_id, host or _this_host()) in HOST_COMMANDS:
+        return "building the CUDA version"
+    return "building the Metal port"
+
 
 # Recompiling an installed build so it picks up this repo's patches (Pixal3D's 8-step
 # default needs scripts/patch_pixal3d_steps.py compiled in). Downloads nothing, so it
@@ -166,7 +198,7 @@ class DownloadRun:
     def __init__(self, backend: Backend, rebuild: bool = False):
         self.backend = backend
         self.rebuild = rebuild
-        self.command = (REBUILDS if rebuild else COMMANDS)[backend.id]
+        self.command = command_for(backend.id, rebuild=rebuild)
         self.status = "queued"
         self.started = time.monotonic()
         self.events: list[dict[str, Any]] = []
@@ -198,7 +230,7 @@ def start(backend_id: str, rebuild: bool = False) -> DownloadRun:
     backend = BY_ID.get(backend_id)
     if backend is None:
         raise KeyError(f"unknown backend: {backend_id}")
-    if backend_id not in (REBUILDS if rebuild else COMMANDS):
+    if command_for(backend_id, rebuild=rebuild) is None:
         raise RuntimeError(f"{backend.label} has no automated "
                            f"{'rebuild' if rebuild else 'setup'} yet")
     # Checked here rather than only in the browser, because the API is the thing that
@@ -391,7 +423,7 @@ def _watch_elapsed(run: DownloadRun, stop: threading.Event) -> None:
     healthy hour-long compile is worse than saying nothing.
     """
     estimate = (REBUILD_MINUTES if run.rebuild else run.backend.setup_minutes or 0) * 60
-    what = "rebuilding" if run.rebuild else "building the Metal port"
+    what = "rebuilding" if run.rebuild else building_label(run.backend.id)
     while not stop.wait(POLL_SECONDS * 2):
         elapsed = time.monotonic() - run.started
         percent = 0 if estimate <= 0 else max(0, min(95, round(elapsed / estimate * 100)))

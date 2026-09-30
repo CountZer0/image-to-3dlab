@@ -220,6 +220,42 @@ def test_an_unsupported_machine_is_refused_before_anything_downloads(monkeypatch
     assert "hunyuan_xiong" not in dl.DOWNLOADS
 
 
+def test_trellis_on_nvidia_runs_the_cuda_bootstrap_with_yes():
+    command = dl.command_for("trellis", host=dl.NVIDIA)
+    assert command[1].endswith("bootstrap_trellis_cuda.py")
+    assert command[-1] == "--yes"
+
+
+def test_trellis_on_a_mac_still_runs_the_metal_bootstrap():
+    command = dl.command_for("trellis", host="apple-silicon")
+    assert command == dl.COMMANDS["trellis"]
+    assert command[1].endswith("bootstrap_trellis_space_macos.py")
+
+
+def test_a_route_without_a_host_command_uses_the_shared_one():
+    assert dl.command_for("pixal3d", host=dl.NVIDIA) == dl.COMMANDS["pixal3d"]
+    assert dl.command_for("pixal3d", rebuild=True) == dl.REBUILDS["pixal3d"]
+    assert dl.command_for("trellis", rebuild=True) is None
+
+
+def test_the_command_follows_the_machine(monkeypatch):
+    import backend_catalog
+
+    monkeypatch.setattr(backend_catalog, "host_platform", lambda: backend_catalog.NVIDIA)
+    assert dl.command_for("trellis")[1].endswith("bootstrap_trellis_cuda.py")
+    assert dl.building_label("trellis") == "building the CUDA version"
+    monkeypatch.setattr(backend_catalog, "host_platform", lambda: backend_catalog.APPLE)
+    assert dl.building_label("trellis") == "building the Metal port"
+
+
+def test_a_setup_run_on_nvidia_holds_the_cuda_command(monkeypatch):
+    import backend_catalog
+
+    monkeypatch.setattr(backend_catalog, "host_platform", lambda: backend_catalog.NVIDIA)
+    run = dl.DownloadRun(backend_catalog.BY_ID["trellis"])
+    assert run.command[1].endswith("bootstrap_trellis_cuda.py")
+
+
 def test_every_route_claiming_automated_setup_actually_has_a_command():
     """The flag and the command table are two halves of one fact; a drift shows the user
     a button that throws "has no automated setup yet" only after they click it."""
