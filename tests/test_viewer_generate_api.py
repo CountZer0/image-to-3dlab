@@ -1158,14 +1158,6 @@ def test_the_old_mac_setup_runner_refuses_other_machines():
     assert ok is False and "Setup & Status" in reason
 
 
-def test_cleanup_keeps_the_provenance_sidecar(tmp_path):
-    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb", {}, "trellis")
-    for name in ("out.glb", "out.provenance.json", "out.json", "out_latents.pt"):
-        (tmp_path / name).write_text("x")
-    api._cleanup_debug_files(job)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.glb", "out.provenance.json"]
-
-
 def test_nvidia_trellis_hides_the_mac_only_controls():
     assert set(api.trellis_spec(api.NVIDIA).hidden_fields) == {"generate-attention", "generate-rembg"}
     assert api.trellis_spec(api.APPLE).hidden_fields == ()

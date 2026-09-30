@@ -21,11 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default; `scripts/patch_trellis_cuda_no_bria.py` removes it, and the route refuses to run
   without that patch. Pictures are cut out by our own background remover instead.
 
-### Fixed
-- **A `.provenance.json` beside the GLB is kept.** With Debug off, the viewer deletes
-  everything but the GLB; the licence record next to it (the NVIDIA TRELLIS.2 route
-  writes one) now stays with the file.
-
 ## [0.3.5] - 2026-09-30
 
 ### Added
