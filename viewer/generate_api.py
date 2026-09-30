@@ -83,6 +83,12 @@ TRELLIS_CUDA_VENDOR = REPO / "vendor" / "trellis-cuda"
 TRELLIS_CUDA_WRAPPER = REPO / "scripts" / "trellis_cuda_generate.py"
 TRELLIS_CUDA_PYTHON = TRELLIS_CUDA_VENDOR / ".venv" / "bin" / "python"
 TRELLIS_CUDA_MARKER = TRELLIS_CUDA_VENDOR / ".i2l-build-complete"
+# Hunyuan3D-2.1 on Linux + NVIDIA: Tencent's own checkout, built by
+# scripts/bootstrap_hunyuan_cuda.py. NVIDIA only; the Mac keeps the MLX routes.
+HUNYUAN_CUDA_VENDOR = REPO / "vendor" / "hunyuan-cuda"
+HUNYUAN_CUDA_WRAPPER = REPO / "scripts" / "hunyuan_cuda_generate.py"
+HUNYUAN_CUDA_PYTHON = HUNYUAN_CUDA_VENDOR / ".venv" / "bin" / "python"
+HUNYUAN_CUDA_MARKER = HUNYUAN_CUDA_VENDOR / ".i2l-build-complete"
 OUTPUT_ROOT = REPO / "output"
 BASELINE_PATH = REPO / "viewer" / "generate_baseline.json"
 TINYCLIP_ADVISOR = REPO / "scripts" / "classify_trellis_input.py"
@@ -1677,6 +1683,85 @@ def trellis_spec(host: str | None = None) -> BackendSpec:
     )
 
 
+# --- Hunyuan3D-2.1 on NVIDIA (Tencent's own code) ---------------------------------------
+# Upstream's demo.py defaults. The generator validates the same ranges again.
+HUNYUAN_CUDA_DEFAULT_SETTINGS: dict[str, Any] = {
+    "seed": 1234,
+    "steps": 50,
+    "octree_resolution": 384,
+    "max_num_view": 6,
+    "paint_resolution": 512,
+}
+
+
+def _hunyuan_cuda_validate_settings(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("settings must be a JSON object")
+    settings = {**HUNYUAN_CUDA_DEFAULT_SETTINGS,
+                **{k: v for k, v in raw.items() if k in HUNYUAN_CUDA_DEFAULT_SETTINGS}}
+    try:
+        settings = {key: int(value) for key, value in settings.items()}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("all Hunyuan3D-2.1 settings must be integers") from exc
+    if settings["octree_resolution"] not in {256, 384, 512}:
+        raise ValueError("octree_resolution must be 256, 384 or 512")
+    if not 6 <= settings["max_num_view"] <= 9:
+        raise ValueError("max_num_view must be 6 to 9")
+    if settings["paint_resolution"] not in {512, 768}:
+        raise ValueError("paint_resolution must be 512 or 768")
+    if settings["steps"] < 1:
+        raise ValueError("steps must be at least 1")
+    return settings
+
+
+def _hunyuan_cuda_build_args(job: Job) -> list[str]:
+    s = job.settings
+    return [
+        str(job.image_path), str(job.output_path),
+        "--seed", str(s["seed"]),
+        "--steps", str(s["steps"]),
+        "--octree-resolution", str(s["octree_resolution"]),
+        "--max-num-view", str(s["max_num_view"]),
+        "--paint-resolution", str(s["paint_resolution"]),
+    ]
+
+
+def _hunyuan_cuda_readiness() -> dict[str, Any]:
+    """Ready only when built *and* every weight is on disk.
+
+    Upstream fetches missing weights on first use, unannounced. The installer names and
+    fetches them all up front, so a missing one means setup has not finished, and the run
+    must not start and download it behind the user's back.
+    """
+    import backend_catalog
+
+    built = (HUNYUAN_CUDA_MARKER.is_file() and HUNYUAN_CUDA_PYTHON.is_file()
+             and HUNYUAN_CUDA_WRAPPER.is_file())
+    weights = {w["label"]: {"label": w["label"], "present": w["present"],
+                            "human": w["human_present"]}
+               for w in backend_catalog.BY_ID["hunyuan-cuda"].describe()["weights"]}
+    missing = [label for label, w in weights.items() if not w["present"]]
+    ready = built and not missing
+    hint = None
+    if not built:
+        hint = ("Hunyuan3D-2.1 for NVIDIA is not installed. Set it up from Setup & Status, "
+                "or run python scripts/bootstrap_hunyuan_cuda.py (Linux only, ~19.5 GB).")
+    elif missing:
+        hint = ("Hunyuan3D-2.1 weights are missing: " + "; ".join(missing) + ". Run "
+                "python scripts/bootstrap_hunyuan_cuda.py --weights-only.")
+    return {
+        "schema_version": 1,
+        "build": {"present": built, "interpreter": str(HUNYUAN_CUDA_PYTHON),
+                  "wrapper": str(HUNYUAN_CUDA_WRAPPER), "hint": hint},
+        "weights": weights,
+        "missing_weights": missing,
+        "ready": ready,
+        "warning": "Not licensed in the EU, the UK or South Korea.",
+    }
+
+
 BACKENDS.update({
     "trellis": trellis_spec(),
     "sf3d": BackendSpec(
@@ -1710,6 +1795,16 @@ BACKENDS.update({
         stage_labels=PIXAL3D_STAGE_LABELS, requires_alpha=False,
         validate_settings=_pixal3d_validate_settings, build_args=_pixal3d_build_args,
         parse_line=_pixal3d_parse_line, readiness=_pixal3d_readiness,
+    ),
+    # Same stage names and progress lines as the MLX Hunyuan routes, so it shares their parser.
+    "hunyuan-cuda": BackendSpec(
+        id="hunyuan-cuda", label="Hunyuan3D-2.1 (NVIDIA)",
+        interpreter=HUNYUAN_CUDA_PYTHON, wrapper=HUNYUAN_CUDA_WRAPPER,
+        default_settings=HUNYUAN_CUDA_DEFAULT_SETTINGS, stages=HUNYUAN_STAGES,
+        stage_labels=HUNYUAN_STAGE_LABELS, requires_alpha=False,
+        validate_settings=_hunyuan_cuda_validate_settings,
+        build_args=_hunyuan_cuda_build_args,
+        parse_line=_hunyuan_parse_line, readiness=_hunyuan_cuda_readiness,
     ),
 })
 

@@ -272,6 +272,13 @@ g('generate-submit').onclick = async () => {
       paint_steps: Number(g('xiong-paint-steps').value),
       paint_tex: Number(g('xiong-paint-tex').value),
     }),
+    'hunyuan-cuda': () => ({
+      seed: Number(g('hycuda-seed').value),
+      steps: Number(g('hycuda-steps').value),
+      octree_resolution: Number(g('hycuda-octree').value),
+      max_num_view: Number(g('hycuda-views').value),
+      paint_resolution: Number(g('hycuda-paint-res').value),
+    }),
   };
   const settings = {
     backend: backendId,

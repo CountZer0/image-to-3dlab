@@ -404,7 +404,7 @@ def test_job_status_payload_handles_no_events_yet(tmp_path):
 
 def test_backend_registry_lists_every_backend():
     assert set(api.BACKENDS) == {
-        "trellis", "sf3d", "hunyuan-mlx", "hunyuan-mlx-xiong", "pixal3d",
+        "trellis", "sf3d", "hunyuan-mlx", "hunyuan-mlx-xiong", "pixal3d", "hunyuan-cuda",
     }
     for spec in api.BACKENDS.values():
         assert spec.stages, f"{spec.id} must declare at least one stage"
@@ -1167,3 +1167,91 @@ def test_hidden_fields_name_real_generate_controls():
     html = (Path(api.__file__).parent / "index.html").read_text()
     for field in api.trellis_spec(api.NVIDIA).hidden_fields:
         assert f'id="{field}"' in html
+
+
+# --- Hunyuan3D-2.1 on NVIDIA: Tencent's own code, NVIDIA only ---------------------------
+def test_hunyuan_cuda_runs_the_cuda_generator():
+    spec = api.BACKENDS["hunyuan-cuda"]
+    assert spec.wrapper == api.HUNYUAN_CUDA_WRAPPER and spec.wrapper.is_file()
+    assert spec.interpreter == api.HUNYUAN_CUDA_PYTHON
+    assert spec.requires_alpha is False  # the generator mattes with our own remover
+
+
+def test_hunyuan_cuda_defaults_match_the_generator():
+    import hunyuan_cuda_generate as gen
+
+    for key, value in api.HUNYUAN_CUDA_DEFAULT_SETTINGS.items():
+        assert gen.DEFAULTS[key] == value, key
+
+
+@pytest.mark.parametrize("payload", [{"octree_resolution": 1024}, {"max_num_view": 12},
+                                     {"paint_resolution": 1024}, {"steps": 0},
+                                     {"seed": "x"}, "not a dict"])
+def test_hunyuan_cuda_rejects_bad_settings(payload):
+    with pytest.raises(ValueError):
+        api._hunyuan_cuda_validate_settings(payload)
+
+
+def test_hunyuan_cuda_args_are_ones_the_generator_accepts(tmp_path):
+    import hunyuan_cuda_generate as gen
+
+    settings = api._hunyuan_cuda_validate_settings({"octree_resolution": 512})
+    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb", settings,
+                  "hunyuan-cuda")
+    args = gen.parse_args(api._hunyuan_cuda_build_args(job))
+    assert args.octree_resolution == 512 and args.output == tmp_path / "out.glb"
+
+
+def test_hunyuan_cuda_progress_moves_through_its_stages(tmp_path):
+    """The generator's own progress lines, through the shared Hunyuan parser."""
+    job = api.Job("0" * 32, tmp_path, tmp_path / "in.png", tmp_path / "out.glb", {},
+                  "hunyuan-cuda")
+    for line in ("loaded shape pipeline in 12.0s",
+                 "shape generated in 40.0s -> /x/shape.glb",
+                 "mesh loaded; paint models ready in 30.0s",
+                 "paint stage done in 90.0s -> /x/out.glb",
+                 "DONE in 130.0s -> /x/out.glb"):
+        api._hunyuan_parse_line(job, line)
+    phases = [event["phase"] for event in job.events]
+    assert phases == ["shape", "shape", "paint_setup", "paint_finish", "paint_finish"]
+    assert job.events[-1]["overall_pct"] == 100
+
+
+def test_hunyuan_cuda_is_not_ready_with_weights_missing(tmp_path, monkeypatch):
+    """Upstream would fetch them unannounced on the first run; the button must not allow it."""
+    for name in ("HUNYUAN_CUDA_MARKER", "HUNYUAN_CUDA_PYTHON"):
+        path = tmp_path / name
+        path.write_text("")
+        monkeypatch.setattr(api, name, path)
+    import backend_catalog
+
+    monkeypatch.setattr(backend_catalog, "_dir_state", lambda path: (False, 0))
+    status = api._hunyuan_cuda_readiness()
+    assert status["build"]["present"] is True
+    assert status["ready"] is False
+    assert "--weights-only" in status["build"]["hint"]
+
+
+def test_hunyuan_cuda_is_ready_when_built_and_fetched(tmp_path, monkeypatch):
+    for name in ("HUNYUAN_CUDA_MARKER", "HUNYUAN_CUDA_PYTHON"):
+        path = tmp_path / name
+        path.write_text("")
+        monkeypatch.setattr(api, name, path)
+    import backend_catalog
+
+    monkeypatch.setattr(backend_catalog, "_dir_state", lambda path: (True, 1))
+    assert api._hunyuan_cuda_readiness()["ready"] is True
+
+
+def test_hunyuan_cuda_is_not_ready_before_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "HUNYUAN_CUDA_MARKER", tmp_path / "absent")
+    status = api._hunyuan_cuda_readiness()
+    assert status["ready"] is False and "bootstrap_hunyuan_cuda.py" in status["build"]["hint"]
+
+
+def test_hunyuan_cuda_fields_exist_in_the_page():
+    html = (Path(api.__file__).parent / "index.html").read_text()
+    assert 'value="hunyuan-cuda"' in html and 'data-backend="hunyuan-cuda"' in html
+    for field in ("hycuda-seed", "hycuda-steps", "hycuda-octree", "hycuda-views",
+                  "hycuda-paint-res"):
+        assert f'id="{field}"' in html, field
