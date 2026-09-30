@@ -32,14 +32,15 @@ Five backends, one Generate 3D page. Sadly life is full of trade-offs, so pick t
 | **Pixal3D (C++/GGML)** ⭐ | Best results we have; one pass, no repaint needed | Mac, NVIDIA | Setup & Status, or `scripts/bootstrap_pixal3d.py` (8.4 GB weights) | MIT (code + flow weights); DINOv3 License (bundled encoder) |
 | **Hunyuan3D-MLX (Xiong, full pipeline)** | Fast, clean results | Mac (NVIDIA: [official Hunyuan3D-2.1](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1)) | Code is in this repo; weights download separately | MIT (code); Tencent Community License (weights) |
 | **Hunyuan3D-MLX (dgrauet shape + Xiong paint)** | The cleanest shapes, at the cost of manual setup | Mac (NVIDIA: [official Hunyuan3D-2.1](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1)) | Cloned separately, manual | Tencent Community License (code + weights) |
-| **TRELLIS.2** | Highest fidelity, closest to the official demo | Mac (NVIDIA: [official TRELLIS.2](https://github.com/microsoft/TRELLIS.2)) | Setup & Status (~1h) | MIT + DINOv3 License |
+| **TRELLIS.2** | Highest fidelity, closest to the official demo | Mac, NVIDIA (Linux; not Windows yet) | Setup & Status (~1h), or `scripts/bootstrap_trellis_cuda.py` on NVIDIA (~15 GB weights) | MIT + DINOv3 License |
 | **Stable Fast 3D** | Fastest, lower fidelity | Mac, NVIDIA (Linux) | Setup & Status, or `scripts/bootstrap_sf3d.py` (gated weights) | Stability AI Community License |
 
 ⭐ Start with **Pixal3D**. It keeps flat, saturated colours in a single pass, where
 TRELLIS.2 often needs a separate repaint.
 
-TRELLIS.2 and Hunyuan3D are built for NVIDIA upstream; this lab wraps their Apple Silicon
-ports. On an NVIDIA machine, use the official repos linked above for those two for now.
+Hunyuan3D is built for NVIDIA upstream; this lab wraps its Apple Silicon ports, so on an
+NVIDIA machine use the official repo linked above for now. TRELLIS.2 runs on both: the
+Metal port on a Mac, Microsoft's own code on Linux + NVIDIA.
 
 <p align="center">
   <img src="docs/images/turntable-pixal3d-warrior.webp" width="360"
@@ -100,7 +101,16 @@ status telling you exactly what's missing:
   [huggingface.co/stabilityai/stable-fast-3d](https://huggingface.co/stabilityai/stable-fast-3d),
   run `hf auth login`, then set it up from Setup & Status or run
   `python scripts/bootstrap_sf3d.py`.
-- **TRELLIS.2**: click **Run setup** (bootstraps the Metal port, ~1h, needs `uv`,
+- **TRELLIS.2 on Linux + NVIDIA** (new, not yet tested on real hardware): click **Set up**
+  on the Setup & Status page, or run `python scripts/bootstrap_trellis_cuda.py`. It says
+  what it will fetch (~15 GB of weights) and asks first. It clones Microsoft's
+  TRELLIS.2 into `vendor/trellis-cuda/` with its own venv. RTX 50-series / RTX PRO 6000
+  cards get prebuilt CUDA 13 wheels; other cards need the CUDA toolkit (`nvcc`) and
+  compile the extensions once, which can take 30-60 minutes. The DINOv3 access below is
+  checked before anything is built. BRIA RMBG-2.0, which upstream loads by default, is
+  patched out; uploads are cut out by our own remover, so any picture works. Windows is
+  not supported for TRELLIS.2 yet.
+- **TRELLIS.2 on a Mac**: click **Run setup** (bootstraps the Metal port, ~1h, needs `uv`,
   Python 3.11 and Xcode command-line tools), or run it manually:
   `python scripts/bootstrap_trellis_space_macos.py`. First run downloads the ~14 GB
   TRELLIS.2-4B weights automatically. **Before that:** its DINOv3 image encoder is gated.
@@ -162,6 +172,10 @@ vendor/trellis-space-mac/.venv/bin/python scripts/trellis_space_generate.py inpu
   - `--from-decode out_decode.pt`: skip sampling, decode **and** model load (bake only)
 - Every run writes `<out>.glb`, `<out>_latents.pt`, `<out>_decode.pt`, and a `.json` manifest
   with exact params and per-stage timings.
+- On Linux + NVIDIA, use the CUDA checkout instead:
+  `vendor/trellis-cuda/.venv/bin/python scripts/trellis_cuda_generate.py input.png output/out.glb`
+  (same settings; `--check` and `--from-latents` work the same way). It also writes
+  `<out>.provenance.json`.
 - In the web UI, a failed TRELLIS decode or bake retains `<out>_latents.pt` even when
   **Debug** is off, so the expensive sampling stage can be resumed. Successful non-debug
   runs clean up the checkpoint after the GLB is safely written.
@@ -211,7 +225,8 @@ character with them.
 | Thing | Why |
 |---|---|
 | Apple Silicon Mac (M-series), 32 GB recommended | Every route |
-| **or** Linux with an NVIDIA card (24 GB VRAM tested) | Pixal3D, Stable Fast 3D, Generate Image |
+| **or** Linux with an NVIDIA card (24 GB VRAM tested) | Pixal3D, Stable Fast 3D, Generate Image, TRELLIS.2 (untested so far) |
+| Linux + NVIDIA: CUDA toolkit matching PyTorch's CUDA | compiles TRELLIS.2's CUDA extensions (not needed on RTX 50-series) |
 | macOS: full Xcode | compiles the Metal kernels for Pixal3D and TRELLIS |
 | Blender 4.2+ | Finish (low-poly clean-up, Pixel Match) and rigging. Install it yourself from [blender.org](https://www.blender.org/download/); Setup & Status shows whether it was found |
 | `uv` | builds the reproducible Python environments |
@@ -231,7 +246,7 @@ cloud GPU. Yours will differ with the machine and the picture.
 | Text to image (Qwen-Image) | ~4.5 min | ~20 s |
 | Image to 3D (Pixal3D) | ~6 min | ~3 min |
 | Image to 3D (Hunyuan3D-MLX) | ~9 min | Mac only |
-| Image to 3D (TRELLIS.2) | 15–35 min | Mac only |
+| Image to 3D (TRELLIS.2) | 15–35 min | not measured yet |
 
 On a Mac, TRELLIS.2 runs about twice as fast with **Attention backend** set to `mlx`.
 

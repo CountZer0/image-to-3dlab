@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **TRELLIS.2 on Linux with an NVIDIA card.** Setup & Status now offers **Set up** for
+  TRELLIS.2 on NVIDIA Linux, and Generate 3D runs it there. It uses Microsoft's own
+  TRELLIS.2 code, not the Mac port, with the same settings. Setup says what it will fetch
+  (~15 GB) and asks first; RTX 50-series cards get prebuilt wheels, other cards need the
+  CUDA toolkit and a one-off compile. Not tested on real hardware yet. Windows is not
+  supported for TRELLIS.2 yet. Also available as `scripts/bootstrap_trellis_cuda.py` and
+  `scripts/trellis_cuda_generate.py`.
+
+### Security
+- **BRIA RMBG-2.0 stays out of the NVIDIA TRELLIS.2 route too.** Upstream loads it by
+  default; `scripts/patch_trellis_cuda_no_bria.py` removes it, and the route refuses to run
+  without that patch. Pictures are cut out by our own background remover instead.
+
+### Fixed
+- **A `.provenance.json` beside the GLB is kept.** With Debug off, the viewer deletes
+  everything but the GLB; the licence record next to it (the NVIDIA TRELLIS.2 route
+  writes one) now stays with the file.
+
 ## [0.3.5] - 2026-09-30
 
 ### Added
