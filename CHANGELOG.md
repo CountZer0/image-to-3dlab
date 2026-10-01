@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/character_pipeline.py hero.png` cuts the background out, generates with
   Pixal3D, then Finishes it (retopologise to 20k faces, Pixel Match, compress) and writes
   one provenance record. Every run gets its own folder under `output/characters/`;
-  `--resume` skips stages already done.
+  `--resume` skips stages already done. It refuses to start on a picture that still
+  needs its background cut out until BiRefNet-lite is installed, so nothing downloads
+  unasked.
 
 ## [0.3.7] - 2026-10-02
 

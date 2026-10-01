@@ -144,7 +144,7 @@ def test_resume_names_every_setting_that_changed(tmp_path):
 
 def _stage_a_run(tmp_path, monkeypatch, **overrides):
     """A picture plus a run folder whose lock was written with default settings."""
-    monkeypatch.setattr(cp, "preflight", lambda: None)
+    monkeypatch.setattr(cp, "preflight", lambda image: None)
     image = tmp_path / "hero.png"
     image.write_bytes(b"picture")
     root = tmp_path / "runs"
@@ -181,8 +181,15 @@ def test_resume_of_a_finished_run_changes_nothing(tmp_path, monkeypatch):
     assert paths["provenance"].read_text() == "{}"
 
 
-def test_a_fresh_run_over_a_finished_one_is_refused(tmp_path, monkeypatch):
+def test_a_fresh_run_over_the_same_finished_run_points_to_resume(tmp_path, monkeypatch):
     image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    paths["final"].write_bytes(b"glb")
+    with pytest.raises(SystemExit, match="already holds this run.*--resume"):
+        cp.main([str(image), "--out", str(root)])
+
+
+def test_a_fresh_run_over_a_finished_run_at_other_settings_is_refused(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch, seed=7)
     paths["final"].write_bytes(b"glb")
     with pytest.raises(SystemExit, match="other settings"):
         cp.main([str(image), "--out", str(root)])
@@ -213,3 +220,51 @@ def test_a_fresh_run_at_other_settings_keeps_the_old_runs_steps(tmp_path, monkey
     monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
     with pytest.raises(SystemExit, match="other settings"):
         cp.main([str(image), "--out", str(root), "--faces", "10000"])
+
+
+def _ready_machine(tmp_path, monkeypatch, *, lite: bool):
+    monkeypatch.setattr(cp, "readiness", lambda: {"ready": True})
+    monkeypatch.setattr(cp, "find_blender", lambda: Path("/usr/bin/blender"))
+    home = tmp_path / "u2net"
+    home.mkdir()
+    monkeypatch.setenv("U2NET_HOME", str(home))
+    if lite:
+        (home / f"{cp.LITE_MODEL}.onnx").write_bytes(b"onnx")
+
+
+def _picture(tmp_path, *, matted: bool):
+    from PIL import Image
+
+    image = Image.new("RGBA", (8, 8), (200, 50, 50, 255))
+    if matted:
+        for x in range(8):
+            image.putpixel((x, 0), (0, 0, 0, 0))
+    path = tmp_path / ("matted.png" if matted else "plain.png")
+    image.save(path)
+    return path
+
+
+def test_preflight_refuses_a_plain_picture_without_birefnet_lite(tmp_path, monkeypatch):
+    _ready_machine(tmp_path, monkeypatch, lite=False)
+    problem = cp.preflight(_picture(tmp_path, matted=False))
+    assert "scripts/bootstrap_matte.py" in problem and "224 MB" in problem
+    assert not list((tmp_path / "u2net").iterdir())
+
+
+def test_preflight_lets_an_already_cut_out_picture_through_without_lite(tmp_path, monkeypatch):
+    _ready_machine(tmp_path, monkeypatch, lite=False)
+    assert cp.preflight(_picture(tmp_path, matted=True)) is None
+
+
+def test_preflight_lets_a_plain_picture_through_once_lite_is_installed(tmp_path, monkeypatch):
+    _ready_machine(tmp_path, monkeypatch, lite=True)
+    assert cp.preflight(_picture(tmp_path, matted=False)) is None
+
+
+def test_a_run_without_lite_stops_before_any_stage(tmp_path, monkeypatch):
+    _ready_machine(tmp_path, monkeypatch, lite=False)
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    root = tmp_path / "runs"
+    with pytest.raises(SystemExit, match="bootstrap_matte"):
+        cp.main([str(_picture(tmp_path, matted=False)), "--out", str(root)])
+    assert not root.exists()

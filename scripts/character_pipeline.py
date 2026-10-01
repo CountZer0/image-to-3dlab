@@ -44,9 +44,10 @@ SCRIPTS = REPO / "scripts"
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCRIPTS))
 
-from pixal3d_generate import LICENSE_NAME, LICENSE_URL, readiness
+from pixal3d_generate import LICENSE_NAME, LICENSE_URL, has_alpha, readiness
 
 from image_to_3dlab.blender import find_blender
+from image_to_3dlab.matte import LITE_MODEL, matte_model
 from image_to_3dlab.provenance import _pipeline_revision, sha256_file
 
 DEFAULT_ROOT = REPO / "output" / "characters"
@@ -190,12 +191,16 @@ def _run(command: list[str], label: str) -> None:
         raise SystemExit(f"[character] {label} failed with exit code {code}")
 
 
-def preflight() -> str | None:
+def preflight(image: Path) -> str | None:
     """Why the run cannot start, checked in seconds before a minutes-long generation."""
     state = readiness()
     if not state["ready"]:
         return ("Pixal3D is not installed. Run `python scripts/bootstrap_pixal3d.py` "
                 f"(it states the 8.4 GB download and asks first). Detail: {state}")
+    if not has_alpha(image) and matte_model() != LITE_MODEL:
+        return ("BiRefNet-lite is not installed, and this picture needs its background cut "
+                "out. Run `python scripts/bootstrap_matte.py` (224 MB, it asks first), or "
+                "pass a picture that is already cut out.")
     if find_blender() is None:
         return ("Blender was not found, and Finish needs it. Install Blender 4.2+ or set "
                 "I2L_BLENDER to its executable.")
@@ -249,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             views=views, resume=args.resume)))
         return 0
 
-    problem = preflight()
+    problem = preflight(args.image)
     if problem:
         raise SystemExit(problem)
 
@@ -261,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
         if paths["final"].is_file() and paths["provenance"].is_file():
             print(f"[character] already finished: {paths['final']}", flush=True)
             return 0
+    elif (paths["final"].exists() and paths["lock"].is_file()
+          and not resume_problem(paths["lock"], wanted)):
+        raise SystemExit(f"{paths['dir']} already holds this run. Add --resume to finish "
+                         "or reuse it, or delete that folder to redo it.")
     elif paths["final"].exists() or (paths["lock"].is_file()
                                      and resume_problem(paths["lock"], wanted)):
         # A fresh run at other settings would overwrite steps/ that another finished
