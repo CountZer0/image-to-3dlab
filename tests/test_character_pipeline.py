@@ -123,3 +123,75 @@ def test_a_tiny_face_count_is_refused_before_any_work(tmp_path):
     image.write_bytes(b"picture")
     with pytest.raises(SystemExit, match="faces"):
         cp.main([str(image), "--faces", "500", "--dry-run"])
+
+
+def test_the_lock_holds_every_setting_and_the_exact_picture():
+    lock = cp.lock_settings({"name": "hero", "faces": 20000, "seed": 7}, "abc")
+    assert lock == {"faces": 20000, "seed": 7, "input_sha256": "abc"}
+
+
+def test_resume_is_refused_without_a_lock(tmp_path):
+    assert "missing" in cp.resume_problem(tmp_path / "run.json", {"faces": 20000})
+
+
+def test_resume_names_every_setting_that_changed(tmp_path):
+    lock = tmp_path / "run.json"
+    lock.write_text(json.dumps({"faces": 20000, "seed": 7, "input_sha256": "a"}))
+    assert cp.resume_problem(lock, {"faces": 20000, "seed": 7, "input_sha256": "a"}) is None
+    problem = cp.resume_problem(lock, {"faces": 10000, "seed": 7, "input_sha256": "b"})
+    assert "faces" in problem and "input_sha256" in problem and "seed" not in problem
+
+
+def _stage_a_run(tmp_path, monkeypatch, **overrides):
+    """A picture plus a run folder whose lock was written with default settings."""
+    monkeypatch.setattr(cp, "preflight", lambda: None)
+    image = tmp_path / "hero.png"
+    image.write_bytes(b"picture")
+    root = tmp_path / "runs"
+    paths = cp.run_paths(root.resolve(), "hero", image, cp.DEFAULT_FACES)
+    paths["steps"].mkdir(parents=True)
+    settings = {"name": "hero", "seed": cp.DEFAULT_SEED, "steps": None,
+                "faces": cp.DEFAULT_FACES, "texture_size": cp.DEFAULT_TEXTURE,
+                "pixel_match": True, **overrides}
+    paths["lock"].write_text(json.dumps(cp.lock_settings(settings, cp.sha256_file(image))))
+    return image, root, paths
+
+
+def test_resume_at_a_new_face_count_is_refused_before_any_work(tmp_path, monkeypatch):
+    image, root, _ = _stage_a_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    with pytest.raises(SystemExit, match="faces"):
+        cp.main([str(image), "--out", str(root), "--resume", "--faces", "10000"])
+
+
+def test_resume_with_an_edited_picture_is_refused(tmp_path, monkeypatch):
+    image, root, _ = _stage_a_run(tmp_path, monkeypatch)
+    image.write_bytes(b"edited picture")
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    with pytest.raises(SystemExit, match="input_sha256"):
+        cp.main([str(image), "--out", str(root), "--resume"])
+
+
+def test_resume_of_a_finished_run_changes_nothing(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    paths["final"].write_bytes(b"glb")
+    paths["provenance"].write_text("{}")
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    assert cp.main([str(image), "--out", str(root), "--resume"]) == 0
+    assert paths["provenance"].read_text() == "{}"
+
+
+def test_a_fresh_run_over_a_finished_one_is_refused(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    paths["final"].write_bytes(b"glb")
+    with pytest.raises(SystemExit, match="already has a finished model"):
+        cp.main([str(image), "--out", str(root)])
+
+
+def test_printed_commands_survive_spaces_in_paths(tmp_path, capsys):
+    folder = tmp_path / "my pics"
+    folder.mkdir()
+    image = folder / "Hero One.png"
+    image.write_bytes(b"picture")
+    cp.main([str(image), "--out", str(tmp_path / "runs"), "--dry-run"])
+    assert "'" in capsys.readouterr().out

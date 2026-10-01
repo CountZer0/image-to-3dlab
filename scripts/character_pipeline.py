@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,9 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / "scripts"
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(SCRIPTS))
+
+from pixal3d_generate import LICENSE_NAME, LICENSE_URL, readiness
 
 from image_to_3dlab.blender import find_blender
 from image_to_3dlab.provenance import _pipeline_revision, sha256_file
@@ -52,8 +56,8 @@ DEFAULT_SEED = 42
 
 CLASSIFICATION = "commercial-conditional"
 LICENSE = {
-    "name": "MIT (Pixal3D code + flow weights); DINOv3 License (bundled encoder)",
-    "url": "https://huggingface.co/raven38/pixal3d-sv-q8_0-v1",
+    "name": LICENSE_NAME,
+    "url": LICENSE_URL,
     "conditions": [
         "Pixal3D code and flow weights are MIT licensed.",
         "The bundled DINOv3 image encoder is governed by the separate DINOv3 License.",
@@ -98,7 +102,28 @@ def run_paths(root: Path, name: str, image: Path, faces: int) -> dict[str, Path]
         "final": final,
         "finish_record": final.with_name(f"{final.stem}.retopo-repaint.json"),
         "provenance": final.with_suffix(".provenance.json"),
+        # The settings the in-between files were made with. Finish's step files carry no
+        # face count, so without this a resume at new settings would reuse old ones.
+        "lock": steps / "run.json",
     }
+
+
+def lock_settings(settings: dict[str, Any], image_sha256: str) -> dict[str, Any]:
+    """What every in-between file depends on: the settings and the exact input picture."""
+    return {**{k: v for k, v in settings.items() if k != "name"}, "input_sha256": image_sha256}
+
+
+def resume_problem(lock: Path, wanted: dict[str, Any]) -> str | None:
+    """Why `--resume` would mix old and new settings, or None when it is safe."""
+    if not lock.is_file():
+        return (f"{lock} is missing, so the files there cannot be matched to these "
+                "settings. Run without --resume to start over.")
+    stored = json.loads(lock.read_text(encoding="utf-8"))
+    changed = sorted(k for k in set(stored) | set(wanted) if stored.get(k) != wanted.get(k))
+    if changed:
+        return (f"--resume refused: {', '.join(changed)} changed since this run started. "
+                "Run without --resume, or use --name for a separate run.")
+    return None
 
 
 def generate_command(python: str, image: Path, output: Path, seed: int,
@@ -159,7 +184,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _run(command: list[str], label: str) -> None:
-    print(f"[character] {label}: {' '.join(command)}", flush=True)
+    print(f"[character] {label}: {shlex.join(command)}", flush=True)
     code = subprocess.run(command, cwd=str(REPO), check=False).returncode
     if code != 0:
         raise SystemExit(f"[character] {label} failed with exit code {code}")
@@ -167,9 +192,6 @@ def _run(command: list[str], label: str) -> None:
 
 def preflight() -> str | None:
     """Why the run cannot start, checked in seconds before a minutes-long generation."""
-    sys.path.insert(0, str(SCRIPTS))
-    from pixal3d_generate import readiness
-
     state = readiness()
     if not state["ready"]:
         return ("Pixal3D is not installed. Run `python scripts/bootstrap_pixal3d.py` "
@@ -218,10 +240,10 @@ def main(argv: list[str] | None = None) -> int:
                 "pixel_match": not args.no_pixel_match}
 
     if args.dry_run:
-        views = None if args.no_pixel_match else paths["views"]
-        print(" ".join(generate_command(python, paths["input"], paths["generated"],
-                                        args.seed, args.steps)))
-        print(" ".join(finish_command(
+        views = None if args.no_pixel_match else usable_views(paths["views"])
+        print(shlex.join(generate_command(python, paths["input"], paths["generated"],
+                                          args.seed, args.steps)))
+        print(shlex.join(finish_command(
             python, paths["generated"], paths["input"], paths["final"],
             faces=args.faces, texture_size=args.texture_size, steps_dir=paths["steps"],
             views=views, resume=args.resume)))
@@ -231,13 +253,21 @@ def main(argv: list[str] | None = None) -> int:
     if problem:
         raise SystemExit(problem)
 
-    if paths["final"].exists() and not args.resume:
-        raise SystemExit(f"{paths['dir']} already has a finished model. Pass --resume to "
-                         "reuse it, or --name to start a new run.")
+    wanted = lock_settings(settings, sha256_file(args.image))
+    if args.resume:
+        problem = resume_problem(paths["lock"], wanted)
+        if problem:
+            raise SystemExit(problem)
+        if paths["final"].is_file() and paths["provenance"].is_file():
+            print(f"[character] already finished: {paths['final']}", flush=True)
+            return 0
+    elif paths["final"].exists():
+        raise SystemExit(f"{paths['dir']} already has a finished model. Use --name to "
+                         "start a new run, or delete that folder to redo it.")
     paths["steps"].mkdir(parents=True, exist_ok=True)
     paths["input"].parent.mkdir(parents=True, exist_ok=True)
-    if not (args.resume and paths["input"].is_file()):
-        shutil.copy2(args.image, paths["input"])
+    shutil.copy2(args.image, paths["input"])
+    paths["lock"].write_text(json.dumps(wanted, indent=2, sort_keys=True) + "\n")
 
     if args.resume and paths["generated"].is_file() and paths["generated_record"].is_file():
         print(f"[character] generate: reusing {paths['generated'].name}", flush=True)
