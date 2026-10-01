@@ -261,12 +261,19 @@ def main(argv: list[str] | None = None) -> int:
         if paths["final"].is_file() and paths["provenance"].is_file():
             print(f"[character] already finished: {paths['final']}", flush=True)
             return 0
-    elif paths["final"].exists():
-        raise SystemExit(f"{paths['dir']} already has a finished model. Use --name to "
-                         "start a new run, or delete that folder to redo it.")
+    elif paths["final"].exists() or (paths["lock"].is_file()
+                                     and resume_problem(paths["lock"], wanted)):
+        # A fresh run at other settings would overwrite steps/ that another finished
+        # model in this folder was made from.
+        raise SystemExit(f"{paths['dir']} already holds a run at other settings. Use "
+                         "--name to start a new run, or delete that folder to redo it.")
     paths["steps"].mkdir(parents=True, exist_ok=True)
     paths["input"].parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.image, paths["input"])
+    # Skipped when the stored copy is already this picture: resuming from it would
+    # otherwise copy a file onto itself, which shutil refuses.
+    if not (paths["input"].is_file()
+            and sha256_file(paths["input"]) == wanted["input_sha256"]):
+        shutil.copy2(args.image, paths["input"])
     paths["lock"].write_text(json.dumps(wanted, indent=2, sort_keys=True) + "\n")
 
     if args.resume and paths["generated"].is_file() and paths["generated_record"].is_file():

@@ -184,7 +184,7 @@ def test_resume_of_a_finished_run_changes_nothing(tmp_path, monkeypatch):
 def test_a_fresh_run_over_a_finished_one_is_refused(tmp_path, monkeypatch):
     image, root, paths = _stage_a_run(tmp_path, monkeypatch)
     paths["final"].write_bytes(b"glb")
-    with pytest.raises(SystemExit, match="already has a finished model"):
+    with pytest.raises(SystemExit, match="other settings"):
         cp.main([str(image), "--out", str(root)])
 
 
@@ -195,3 +195,21 @@ def test_printed_commands_survive_spaces_in_paths(tmp_path, capsys):
     image.write_bytes(b"picture")
     cp.main([str(image), "--out", str(tmp_path / "runs"), "--dry-run"])
     assert "'" in capsys.readouterr().out
+
+
+def test_resume_from_the_runs_own_copy_of_the_picture_does_not_crash(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    paths["input"].parent.mkdir(parents=True)
+    paths["input"].write_bytes(image.read_bytes())
+    ran = []
+    monkeypatch.setattr(cp, "_run", lambda command, label: ran.append(label))
+    with pytest.raises(FileNotFoundError):  # stops at reading records the stub never wrote
+        cp.main([str(paths["input"]), "--out", str(root), "--name", "hero", "--resume"])
+    assert ran == ["generate", "finish"]
+
+
+def test_a_fresh_run_at_other_settings_keeps_the_old_runs_steps(tmp_path, monkeypatch):
+    image, root, _ = _stage_a_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    with pytest.raises(SystemExit, match="other settings"):
+        cp.main([str(image), "--out", str(root), "--faces", "10000"])
