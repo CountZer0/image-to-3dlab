@@ -36,6 +36,7 @@ tuning checklist. Manual fitting and visual weight/deformation review remain req
 | `bootstrap_blender.py` | Install Blender 4.2 LTS for Finish on Linux, from blender.org. |
 | `bootstrap_matte.py` | Install BiRefNet-lite, the background remover every backend uses once it is present. |
 | `bootstrap_qwen_image.py` | Install the text-to-image route: a stable-diffusion.cpp binary and Qwen-Image weights. |
+| `character_pipeline.py` | Turn one picture of a character into a finished, game-ready GLB, in one command. |
 | `pixal3d_generate.py` | End-to-end Pixal3D generation: image -> textured GLB, on a Mac or an NVIDIA card. |
 | `trellis_space_generate.py` | Full image -> GLB generation through the CLEAN `trellis-space-mac` port on Apple Silicon. |
 | `trellis_cuda_generate.py` | Full image -> GLB generation through Microsoft's own TRELLIS.2 on an NVIDIA card. |

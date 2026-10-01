@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **One command from a character picture to a finished model.**
+  `scripts/character_pipeline.py hero.png` cuts the background out, generates with
+  Pixal3D, then Finishes it (retopologise to 20k faces, Pixel Match, compress) and writes
+  one provenance record. Every run gets its own folder under `output/characters/`;
+  `--resume` skips stages already done.
+
 ## [0.3.7] - 2026-10-02
 
 ### Added
