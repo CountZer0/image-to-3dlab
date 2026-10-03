@@ -12,7 +12,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+import trimesh
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "character_pipeline.py"
 
@@ -268,3 +270,43 @@ def test_a_run_without_lite_stops_before_any_stage(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="bootstrap_matte"):
         cp.main([str(_picture(tmp_path, matted=False)), "--out", str(root)])
     assert not root.exists()
+
+
+def test_silhouette_iou_is_overlap_over_union():
+    a = np.zeros((4, 4), bool)
+    b = np.zeros((4, 4), bool)
+    a[:2] = True          # 8 pixels
+    b[1:3] = True         # 8 pixels, 4 shared
+    assert cp.silhouette_iou(a, b) == pytest.approx(4 / 12)
+    assert cp.silhouette_iou(a, a) == 1.0
+    assert cp.silhouette_iou(np.zeros((2, 2), bool), np.zeros((2, 2), bool)) == 0.0
+
+
+def test_one_body_counts_as_one_piece_even_when_split_at_uv_seams():
+    box = trimesh.creation.box()
+    # glTF-style: every face gets its own vertices, as a UV split would do.
+    split = trimesh.Trimesh(box.vertices[box.faces].reshape(-1, 3),
+                            np.arange(len(box.faces) * 3).reshape(-1, 3), process=False)
+    assert cp.largest_part_share(split) == (1, pytest.approx(1.0))
+
+
+def test_fragments_are_counted_by_share_of_surface():
+    big = trimesh.creation.box(extents=(3, 3, 3))
+    small = trimesh.creation.box(extents=(1, 1, 1))
+    small.apply_translation((10, 0, 0))
+    pieces, largest = cp.largest_part_share(trimesh.util.concatenate([big, small]))
+    assert pieces == 2
+    assert largest == pytest.approx(54 / 60)
+
+
+@pytest.mark.parametrize("iou, largest, failed", [
+    (0.976, 1.0, []),                         # the Meebit that worked
+    (0.442, 0.705, ["outline", "fragments"]),  # the pixel-art bust that shattered
+    (None, 0.95, []),                         # no camera: only the fragment check runs
+    (0.90, 0.80, ["fragments"]),
+])
+def test_quality_verdict_names_each_problem(iou, largest, failed):
+    problems = cp.quality_verdict(iou, largest)
+    assert len(problems) == len(failed)
+    for word, problem in zip(failed, problems):
+        assert word in problem

@@ -22,6 +22,14 @@ No rig: the finished model is static on purpose, ready for whatever rigging rout
 next. `--resume` reuses any stage already on disk, so a run that died in Finish does not
 pay for generation twice. `--dry-run` prints the commands and stops.
 
+**A quality check, because generators fail quietly.** A flat pixel-art bust once came back
+as nine floating fragments with two bars through the head, and every stage reported
+success. So the finished model is measured against its own picture: how well its outline,
+seen from Pixal3D's camera, overlaps the cut-out (good models measure ~0.98, that one
+0.44), and how much of its surface sits in the largest connected piece. Below the bar the
+files are kept, the numbers go in the provenance record, and the run exits non-zero so a
+batch can tell. Regenerate (another `--seed`, or a better picture) rather than repair.
+
 Licence: Pixal3D's code and flow weights are MIT, but it bundles the DINOv3 image encoder
 under its own licence, so the result is classed `commercial-conditional`, as TRELLIS's is.
 """
@@ -44,8 +52,12 @@ SCRIPTS = REPO / "scripts"
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SCRIPTS))
 
+import numpy as np
+import trimesh
+from mesh_health import weld_by_position
 from pixal3d_generate import LICENSE_NAME, LICENSE_URL, has_alpha, readiness
 
+from image_to_3dlab import photo_paint
 from image_to_3dlab.blender import find_blender
 from image_to_3dlab.matte import LITE_MODEL, matte_model
 from image_to_3dlab.provenance import _pipeline_revision, sha256_file
@@ -54,6 +66,11 @@ DEFAULT_ROOT = REPO / "output" / "characters"
 DEFAULT_FACES = 20000
 DEFAULT_TEXTURE = 2048
 DEFAULT_SEED = 42
+
+# Quality bars, set between the two models measured so far: a good one at 0.976 / 100%,
+# a shattered one at 0.442 / 70.5%. Directional, not precise: tighten with more runs.
+MIN_SILHOUETTE_IOU = 0.85
+MIN_LARGEST_PART = 0.90
 
 CLASSIFICATION = "commercial-conditional"
 LICENSE = {
@@ -153,6 +170,57 @@ def finish_command(python: str, generated: Path, image: Path, output: Path, *,
 def usable_views(views: Path) -> Path | None:
     """The Pixel Match camera folder, or None when the generator did not leave one."""
     return views if (views / "transforms.json").is_file() else None
+
+
+def silhouette_iou(model: np.ndarray, matte: np.ndarray) -> float:
+    """Overlap of two boolean masks: shared pixels over pixels in either. 0 when both empty."""
+    union = np.logical_or(model, matte).sum()
+    return float(np.logical_and(model, matte).sum() / union) if union else 0.0
+
+
+def largest_part_share(mesh: trimesh.Trimesh) -> tuple[int, float]:
+    """(connected pieces, largest piece's share of the surface area), welded by position.
+
+    Welding is required: glTF splits vertices at every UV seam, and without it every UV
+    chart would count as a separate piece (see `mesh_health.weld_by_position`).
+    """
+    parts = weld_by_position(mesh).split(only_watertight=False)
+    areas = [part.area for part in parts]
+    total = sum(areas)
+    return len(parts), (max(areas) / total if total else 0.0)
+
+
+def quality_verdict(iou: float | None, largest: float) -> list[str]:
+    """What is wrong with the model, in words; empty means it passed."""
+    problems = []
+    if iou is not None and iou < MIN_SILHOUETTE_IOU:
+        problems.append(f"its outline overlaps the picture by only {iou:.2f} "
+                        f"(needs {MIN_SILHOUETTE_IOU})")
+    if largest < MIN_LARGEST_PART:
+        problems.append(f"its largest piece is only {largest:.0%} of the surface "
+                        f"(needs {MIN_LARGEST_PART:.0%}): it is in fragments")
+    return problems
+
+
+def measure_quality(model: Path, views: Path | None) -> dict[str, Any]:
+    """Measure a finished GLB against the picture Pixal3D saw. Seconds, numpy only."""
+    positions, _, faces, _ = photo_paint.read_glb(model)
+    pieces, largest = largest_part_share(trimesh.Trimesh(positions, faces, process=False))
+    iou = None
+    if views is not None:
+        loaded, mesh_scale = photo_paint.load_views(views)
+        view = loaded[0]
+        x, y, depth = photo_paint.project(
+            photo_paint.to_view_space(positions, mesh_scale=mesh_scale), view)
+        face_of, _ = photo_paint.rasterize(np.stack([x, y], axis=1)[faces], depth[faces],
+                                           view.image.shape[:2])
+        drawn = face_of.reshape(view.image.shape[:2]) >= 0
+        iou = round(silhouette_iou(drawn, view.image[..., 3] > 127), 3)
+    problems = quality_verdict(iou, largest)
+    return {"passed": not problems, "problems": problems, "silhouette_iou": iou,
+            "pieces": pieces, "largest_part_share": round(largest, 3),
+            "bars": {"silhouette_iou": MIN_SILHOUETTE_IOU,
+                     "largest_part_share": MIN_LARGEST_PART}}
 
 
 def provenance_record(image: Path, final: Path, settings: dict[str, Any],
@@ -305,10 +373,19 @@ def main(argv: list[str] | None = None) -> int:
         _read_json(paths["generated_record"]), _read_json(paths["finish_record"]),
         _pipeline_revision(),
     )
+    quality = measure_quality(paths["final"], usable_views(paths["views"]))
+    record["quality"] = quality
     paths["provenance"].write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     size = paths["final"].stat().st_size / 1048576
+    iou = quality["silhouette_iou"]
+    print(f"[character] quality: outline match {'n/a' if iou is None else iou}, "
+          f"{quality['pieces']} piece(s), largest {quality['largest_part_share']:.0%}",
+          flush=True)
     print(f"[character] done -> {paths['final']} ({size:.1f} MB); "
           f"provenance {paths['provenance'].name}", flush=True)
+    if not quality["passed"]:
+        raise SystemExit("[character] FAILED quality check: " + "; ".join(quality["problems"])
+                         + ". Files kept. Try another --seed, or a fuller, shaded picture.")
     return 0
 
 
