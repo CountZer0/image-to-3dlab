@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--resume` skips stages already done. It refuses to start on a picture that still
   needs its background cut out until BiRefNet-lite is installed, so nothing downloads
   unasked.
+- **A quality check on every character.** The finished model is measured against its
+  picture: how well its outline overlaps the cut-out, and whether it is one piece or
+  fragments. A failing model is kept, its numbers go in the provenance record, and the run
+  exits non-zero, so a broken generation no longer reports plain success.
 
 ## [0.3.7] - 2026-10-02
 
