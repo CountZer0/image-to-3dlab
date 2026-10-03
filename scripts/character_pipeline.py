@@ -223,6 +223,15 @@ def measure_quality(model: Path, views: Path | None) -> dict[str, Any]:
                      "largest_part_share": MIN_LARGEST_PART}}
 
 
+def quality_problem(quality: dict[str, Any] | None) -> str | None:
+    """Why a finished model fails its quality check, or None when it passed."""
+    if quality is None:
+        return "no quality check is recorded for it"
+    if quality.get("passed"):
+        return None
+    return "; ".join(quality.get("problems") or ["it did not pass"])
+
+
 def provenance_record(image: Path, final: Path, settings: dict[str, Any],
                       generated: dict[str, Any], finished: dict[str, Any],
                       revision: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -332,6 +341,11 @@ def main(argv: list[str] | None = None) -> int:
         if problem:
             raise SystemExit(problem)
         if paths["final"].is_file() and paths["provenance"].is_file():
+            problem = quality_problem(_read_json(paths["provenance"]).get("quality"))
+            if problem:
+                raise SystemExit(f"[character] already finished, but FAILED quality check: "
+                                 f"{problem}. Files kept. Try another --seed, or a fuller, "
+                                 "shaded picture.")
             print(f"[character] already finished: {paths['final']}", flush=True)
             return 0
     elif (paths["final"].exists() and paths["lock"].is_file()
@@ -373,18 +387,25 @@ def main(argv: list[str] | None = None) -> int:
         _read_json(paths["generated_record"]), _read_json(paths["finish_record"]),
         _pipeline_revision(),
     )
-    quality = measure_quality(paths["final"], usable_views(paths["views"]))
+    paths["provenance"].write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    try:
+        quality = measure_quality(paths["final"], usable_views(paths["views"]))
+    except (ValueError, KeyError, IndexError, OSError) as error:
+        quality = {"passed": False, "error": f"{type(error).__name__}: {error}",
+                   "problems": [f"the model could not be measured ({error})"]}
     record["quality"] = quality
     paths["provenance"].write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     size = paths["final"].stat().st_size / 1048576
-    iou = quality["silhouette_iou"]
-    print(f"[character] quality: outline match {'n/a' if iou is None else iou}, "
-          f"{quality['pieces']} piece(s), largest {quality['largest_part_share']:.0%}",
-          flush=True)
+    if "error" not in quality:
+        iou = quality["silhouette_iou"]
+        print(f"[character] quality: outline match {'n/a' if iou is None else iou}, "
+              f"{quality['pieces']} piece(s), largest {quality['largest_part_share']:.0%}",
+              flush=True)
     print(f"[character] done -> {paths['final']} ({size:.1f} MB); "
           f"provenance {paths['provenance'].name}", flush=True)
-    if not quality["passed"]:
-        raise SystemExit("[character] FAILED quality check: " + "; ".join(quality["problems"])
+    problem = quality_problem(quality)
+    if problem:
+        raise SystemExit("[character] FAILED quality check: " + problem
                          + ". Files kept. Try another --seed, or a fuller, shaded picture.")
     return 0
 

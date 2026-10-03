@@ -177,10 +177,26 @@ def test_resume_with_an_edited_picture_is_refused(tmp_path, monkeypatch):
 def test_resume_of_a_finished_run_changes_nothing(tmp_path, monkeypatch):
     image, root, paths = _stage_a_run(tmp_path, monkeypatch)
     paths["final"].write_bytes(b"glb")
-    paths["provenance"].write_text("{}")
+    stored = json.dumps({"quality": {"passed": True, "problems": []}})
+    paths["provenance"].write_text(stored)
     monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
     assert cp.main([str(image), "--out", str(root), "--resume"]) == 0
-    assert paths["provenance"].read_text() == "{}"
+    assert paths["provenance"].read_text() == stored
+
+
+@pytest.mark.parametrize("record, reason", [
+    ({"quality": {"passed": False, "problems": ["it is in fragments"]}}, "it is in fragments"),
+    ({}, "no quality check"),
+])
+def test_resume_of_a_finished_run_that_failed_its_check_still_fails(
+        tmp_path, monkeypatch, record, reason):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    paths["final"].write_bytes(b"glb")
+    paths["provenance"].write_text(json.dumps(record))
+    monkeypatch.setattr(cp, "_run", lambda *a: pytest.fail("must not run a stage"))
+    with pytest.raises(SystemExit, match=f"FAILED quality check: {reason}"):
+        cp.main([str(image), "--out", str(root), "--resume"])
+    assert paths["final"].read_bytes() == b"glb"
 
 
 def test_a_fresh_run_over_the_same_finished_run_points_to_resume(tmp_path, monkeypatch):
@@ -310,3 +326,124 @@ def test_quality_verdict_names_each_problem(iou, largest, failed):
     assert len(problems) == len(failed)
     for word, problem in zip(failed, problems):
         assert word in problem
+
+
+# --- the quality check end to end ---------------------------------------------------------
+
+# A camera far away with a narrow lens, so a box seen face-on projects to a rectangle whose
+# size follows from the pinhole formula alone. Pixal3D's frame maps GLB (x, y, z) to view
+# (-x, z, y): GLB y is depth, GLB z is up.
+SIZE, FOCAL, DISTANCE, MESH_SCALE = 64, 1600.0, 50.0, 2.0
+
+
+def _box_glb(path, extents, offset=(0.0, 0.0, 0.0), extra=None):
+    from PIL import Image
+
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation(offset)
+    if extra is not None:
+        box = trimesh.util.concatenate([box, extra])
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=Image.new("RGB", (4, 4), (128, 128, 128)))
+    uv = (box.vertices[:, :2] - box.vertices[:, :2].min(0)) / np.ptp(box.vertices[:, :2], 0)
+    box.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
+    path.write_bytes(box.export(file_type="glb"))
+    return path
+
+
+def _views_of(folder, extents):
+    """A .svviews folder whose matte is the box's front face, drawn without photo_paint."""
+    from PIL import Image
+
+    width, depth, height = (e / MESH_SCALE for e in extents)
+    near = DISTANCE - depth / 2
+    half_w, half_h = FOCAL * width / 2 / near, FOCAL * height / 2 / near
+    centre = np.arange(SIZE) + 0.5 - SIZE / 2
+    inside = (np.abs(centre)[None, :] < half_w) & (np.abs(centre)[:, None] < half_h)
+    rgba = np.zeros((SIZE, SIZE, 4), np.uint8)
+    rgba[inside] = (200, 50, 50, 255)
+    folder.mkdir()
+    Image.fromarray(rgba).save(folder / "input.png")
+    camera = np.eye(4)
+    camera[2, 3] = DISTANCE
+    (folder / "transforms.json").write_text(json.dumps({
+        "camera_angle_x": 2 * np.arctan(SIZE / 2 / FOCAL), "mesh_scale": MESH_SCALE,
+        "frames": [{"file_path": "input.png", "transform_matrix": camera.tolist()}],
+    }))
+    return folder, inside
+
+
+# Tall and narrow, and thin in depth, so a swapped axis or a lost scale changes the outline.
+EXTENTS = (1.0, 0.4, 1.6)
+
+
+def test_a_model_that_matches_its_picture_passes(tmp_path):
+    views, inside = _views_of(tmp_path / "raw.svviews", EXTENTS)
+    assert 200 < inside.sum() < SIZE * SIZE / 2  # a real outline, not empty or full
+    quality = cp.measure_quality(_box_glb(tmp_path / "box.glb", EXTENTS), views)
+    assert quality["silhouette_iou"] >= 0.95
+    assert quality["pieces"] == 1 and quality["largest_part_share"] == 1.0
+    assert quality["passed"] and quality["problems"] == []
+
+
+@pytest.mark.parametrize("extents, offset", [
+    (EXTENTS, (0.5, 0.0, 0.0)),            # moved sideways
+    ((2.0, 0.8, 3.2), (0.0, 0.0, 0.0)),    # twice the size
+    ((1.6, 0.4, 1.0), (0.0, 0.0, 0.0)),    # lying on its side
+])
+def test_a_model_that_misses_its_picture_fails_on_outline(tmp_path, extents, offset):
+    views, _ = _views_of(tmp_path / "raw.svviews", EXTENTS)
+    quality = cp.measure_quality(_box_glb(tmp_path / "box.glb", extents, offset), views)
+    assert quality["silhouette_iou"] < cp.MIN_SILHOUETTE_IOU
+    assert not quality["passed"] and "outline" in quality["problems"][0]
+
+
+def test_without_a_camera_only_the_fragment_check_runs(tmp_path):
+    quality = cp.measure_quality(_box_glb(tmp_path / "box.glb", EXTENTS), None)
+    assert quality["silhouette_iou"] is None and quality["passed"]
+
+
+def _fragments():
+    small = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
+    small.apply_translation((5.0, 0.0, 0.0))
+    return small
+
+
+def _stub_stages(monkeypatch, paths, write_final):
+    def run(command, label):
+        if label == "generate":
+            paths["generated_record"].write_text("{}")
+        else:
+            write_final(paths["final"])
+            paths["finish_record"].write_text("{}")
+    monkeypatch.setattr(cp, "_run", run)
+
+
+def test_a_failed_check_keeps_the_files_records_the_numbers_and_exits_non_zero(
+        tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    _stub_stages(monkeypatch, paths,
+                 lambda final: _box_glb(final, (1, 1, 1), extra=_fragments()))
+    with pytest.raises(SystemExit, match="FAILED quality check.*fragments"):
+        cp.main([str(image), "--out", str(root)])
+    assert paths["final"].is_file()
+    quality = json.loads(paths["provenance"].read_text())["quality"]
+    assert quality["passed"] is False and quality["pieces"] == 2
+    assert quality["largest_part_share"] < cp.MIN_LARGEST_PART
+
+
+def test_a_passing_check_is_recorded_and_exits_zero(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    _stub_stages(monkeypatch, paths, lambda final: _box_glb(final, (1, 1, 1)))
+    assert cp.main([str(image), "--out", str(root)]) == 0
+    assert json.loads(paths["provenance"].read_text())["quality"]["passed"] is True
+
+
+def test_a_model_that_cannot_be_measured_still_gets_its_provenance(tmp_path, monkeypatch):
+    image, root, paths = _stage_a_run(tmp_path, monkeypatch)
+    _stub_stages(monkeypatch, paths, lambda final: final.write_bytes(b"not a glb"))
+    with pytest.raises(SystemExit, match="FAILED quality check.*could not be measured"):
+        cp.main([str(image), "--out", str(root)])
+    record = json.loads(paths["provenance"].read_text())
+    assert record["license"] == cp.LICENSE
+    assert record["quality"]["passed"] is False and record["quality"]["error"]
